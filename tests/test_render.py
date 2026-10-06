@@ -190,3 +190,10 @@ def test_fit_folds_finished_children_of_a_running_agent():
 
     assert len(text.splitlines()) <= 7
     assert "boss" in text and "k9" in text and "k0" not in text
+
+
+def test_escape_sequences_in_model_effort_kind_and_id_are_neutralised():
+    s = session([agent("a", model="opus\x1b[2J", effort="hi\x1b]0;x\x07")], sid="s\x1b[1m1")
+    s.kind = "inter\x1b[31mactive"
+
+    assert "\x1b" not in render([s], now=NOW).replace("\x1b[0m", "")

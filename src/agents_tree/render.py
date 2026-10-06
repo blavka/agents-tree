@@ -126,9 +126,9 @@ def render(sessions: list[Session], *, now: float | None = None, window: int | N
         walk(s.agents, "")
 
     def columns(a: Agent) -> list[str]:
-        model = a.model or "-"
+        model = clean(a.model or "-")
         if a.effort:
-            model = f"{model} ({a.effort})"
+            model = f"{model} ({clean(a.effort)})"
         win = window or a.context_window
         tokens = f"{fmt_tokens(a.context_tokens):>5}"
         if a.context_tokens and win:
@@ -163,9 +163,9 @@ def render(sessions: list[Session], *, now: float | None = None, window: int | N
             s = sessions[i]
             if current != 0:
                 out.append("")
-            out.append(st("1", clean(s.title)) + st("90", f"  [{s.id[:8]}]")
+            out.append(st("1", clean(s.title)) + st("90", f"  [{clean(s.id[:8])}]")
                        + (st("34", f"  {clean(s.cwd)}") if s.cwd else "")
-                       + (st("90", f"  {s.kind}") if s.kind else ""))
+                       + (st("90", f"  {clean(s.kind)}") if s.kind else ""))
         room = max(label_width - len(prefix), 4)
         label = a.label if len(a.label) <= room else a.label[:room - 1] + "…"
         text = st("1", label) if a is sessions[i].main else label
