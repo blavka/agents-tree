@@ -223,3 +223,37 @@ def test_pane_shows_a_crash_and_waits(monkeypatch, capsys):
     assert herdr.run(["pane"]) == 1
     assert "kaput" in capsys.readouterr().err
     assert waited
+
+
+def test_marks_fall_back_to_a_private_directory_not_tmp(monkeypatch, tmp_path):
+    monkeypatch.delenv("HERDR_PLUGIN_STATE_DIR", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+
+    d = herdr._private_marks_dir()
+
+    assert d == tmp_path / "run" / "agents-tree-panes"
+    assert stat.S_IMODE(d.stat().st_mode) == 0o700
+
+
+def test_a_symlinked_marks_directory_is_refused(monkeypatch, tmp_path):
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "agents-tree-panes").symlink_to(tmp_path / "elsewhere")
+    monkeypatch.setenv("HERDR_PLUGIN_STATE_DIR", str(tmp_path / "state"))
+
+    with pytest.raises(PermissionError):
+        herdr._private_marks_dir()
+
+
+def test_a_planted_symlink_mark_is_not_followed(fake_herdr, monkeypatch, tmp_path):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    mark = herdr._mark_path("w1:p7")
+    mark.parent.mkdir(parents=True, mode=0o700)
+    mark.symlink_to(victim)
+    monkeypatch.setattr(agents_tree.cli, "main", lambda argv: 0)
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:p7")
+
+    herdr.run(["pane"])
+
+    assert victim.read_text() == "keep me"

@@ -19,9 +19,9 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -89,8 +89,21 @@ def target_for(pane: dict) -> tuple[str, str]:
 # recognises it by identity rather than by a title another pane could share.
 
 def _marks_dir() -> Path:
-    base = os.environ.get("HERDR_PLUGIN_STATE_DIR") or tempfile.gettempdir()
+    """A directory only this user can write: herdr's state dir for the plugin, else
+    the user's runtime or cache directory, never a shared one like /tmp."""
+    base = (os.environ.get("HERDR_PLUGIN_STATE_DIR") or os.environ.get("XDG_RUNTIME_DIR")
+            or Path.home() / ".cache")
     return Path(base) / "agents-tree-panes"
+
+
+def _private_marks_dir() -> Path:
+    """The marks directory, created 0700; refuses one that is a symlink or not ours."""
+    d = _marks_dir()
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    st = os.lstat(d)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+        raise PermissionError(f"{d} is not a private directory of this user")
+    return d
 
 
 def _mark_path(pane_id: str) -> Path:
@@ -132,8 +145,13 @@ def run_pane() -> int:
 
     mark = _mark_path(os.environ["HERDR_PANE_ID"]) if os.environ.get("HERDR_PANE_ID") else None
     if mark:
-        mark.parent.mkdir(parents=True, exist_ok=True)
-        mark.write_text(str(os.getpid()))
+        try:
+            _private_marks_dir()
+            fd = os.open(mark, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(str(os.getpid()))
+        except OSError:
+            mark = None  # the tree still runs; the toggle key just opens a second one
     target = os.environ.get(TARGET_ENV, "")
     args = ["-w", "--provider", os.environ.get(PROVIDER_ENV) or DEFAULT_PROVIDER]
     try:
