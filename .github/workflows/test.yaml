@@ -1,0 +1,75 @@
+name: Test
+
+on:
+  push:
+    paths-ignore:
+      - '**/README.md'
+      - '.*'
+  pull_request:
+    types: [opened, synchronize]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up uv and Python 3.12
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies (uv.lock must match pyproject.toml)
+        run: uv sync --locked
+
+      - name: Lint the package
+        run: uv run pylint src
+
+      # pytest fixtures are arguments that shadow module names and go unused by design.
+      - name: Lint the tests
+        run: uv run pylint tests --disable=redefined-outer-name,protected-access,unused-argument
+
+      - name: Check types
+        run: uv run pyright
+
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - '3.10'
+          - '3.11'
+          - '3.12'
+          - '3.13'
+          - '3.14'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: "Set up uv and Python ${{ matrix.python-version }}"
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Run tests
+        run: uv run pytest
+
+      - name: Test run
+        run: uv run agents-tree --version
+
+      # What the herdr plugin runs: the bundled source, no install.
+      - name: Test run from the source tree
+        run: PYTHONPATH=src uv run --no-project python -m agents_tree --version
+
+      - name: Package project
+        run: uv build

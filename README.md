@@ -110,7 +110,14 @@ For development, link a checkout instead: `herdr plugin link /path/to/agents-tre
 ```bash
 uv sync
 uv run pytest
+uv run pylint src
+uv run pylint tests --disable=redefined-outer-name,protected-access,unused-argument
+uv run pyright
 ```
+
+CI (`.github/workflows/test.yaml`) runs the same on every push and pull request:
+lint and types on Python 3.12, then the tests, a test run and a package build on
+3.10 to 3.14.
 
 Providers live in `src/agents_tree/providers/`: each turns one agent CLI's files
 into the provider-neutral `Session`/`Agent` model in `model.py`, which

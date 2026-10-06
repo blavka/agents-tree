@@ -29,6 +29,8 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "pylint>=4.1.2",
+    "pyright>=1.1.414",
     "pytest>=9.1.1",
 ]
 
@@ -39,3 +41,24 @@ pythonpath = ["tests"]
 [tool.pyright]
 venvPath = "."
 venv = ".venv"
+
+[tool.pylint.main]
+py-version = "3.10"
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint."messages control"]
+# Docstrings where they say something, and design limits judged in review, not by count.
+disable = [
+    "missing-module-docstring",
+    "missing-class-docstring",
+    "missing-function-docstring",
+    "too-many-arguments",
+    "too-many-positional-arguments",
+    "too-many-instance-attributes",
+    "too-many-locals",
+    "too-many-branches",
+    "too-many-return-statements",
+    "too-few-public-methods",
+]
