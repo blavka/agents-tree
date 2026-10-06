@@ -1,31 +1,19 @@
 import re
 
 import pytest
+from conftest import NOW, agent, session
 
-from agents_tree.model import Agent, Session
-from agents_tree.render import fmt_duration, fmt_tokens, fmt_window, render
-
-NOW = 10_000.0
-
-
-def agent(label, status="completed", started=0.0, children=(), model="opus-5-5",
-          effort: str | None = "high", ctx: int | None = 50_000, window=1_000_000):
-    return Agent(id=label, label=label, model=model, effort=effort, context_tokens=ctx,
-                 context_window=window, status=status, started=started,
-                 ended=None if status == "running" else started + 60, children=list(children))
-
-
-def session(agents, sid="s1", title="Work"):
-    main = agent("main", status="busy", started=0.0)
-    main.ended = NOW
-    return Session(id=sid, provider="claude", title=title, main=main, agents=list(agents),
-                   cwd="/w/app", kind="interactive")
+from agents_tree.render import fmt_duration, fmt_tokens, fmt_window, render, render_lines
 
 
 def model_columns(text):
     """Column where each row's model text starts."""
     return {m.start() for line in text.splitlines()
             if (m := re.search(r"(opus|haiku)-", line))}
+
+
+def tree_rows(text):
+    return [line for line in text.splitlines() if re.match(r"[│ ]*[├└]─", line)]
 
 
 def test_rows_line_up_across_depths_and_sessions():
@@ -42,7 +30,7 @@ def test_row_shows_model_effort_context_elapsed_and_status():
 
     row = next(line for line in text.splitlines() if "Explore" in line)
     assert "opus-5-5 (high)" in row
-    assert "250k  25 % of 1M" in row
+    assert "250k 25 % of 1M" in row
     assert "1m00s" in row
     assert row.endswith("completed")
 
@@ -51,12 +39,6 @@ def test_running_agent_elapsed_counts_up_to_now():
     text = render([session([agent("busy", status="running", started=NOW - 90)])], now=NOW)
 
     assert "1m30s" in next(line for line in text.splitlines() if line.startswith("└─ busy"))
-
-
-def test_window_override_changes_the_share():
-    text = render([session([agent("a", ctx=100_000)])], now=NOW, window=200_000)
-
-    assert "100k  50 % of 200k" in text
 
 
 def test_effort_is_omitted_for_models_without_it():
@@ -70,8 +52,33 @@ def test_tree_glyphs_mark_last_children():
     text = render([session([agent("a", children=[agent("a1"), agent("a2")]), agent("b")])],
                   now=NOW)
 
-    labels = [re.split(r"\s{2,}opus", line)[0] for line in text.splitlines()[3:]]
+    labels = [re.split(r"\s{2,}opus", line)[0] for line in tree_rows(text)]
     assert labels == ["├─ a", "│  ├─ a1", "│  └─ a2", "└─ b"]
+
+
+def test_header_names_the_columns_and_lines_up_with_them():
+    text = render([session([agent("Explore: look")])], now=NOW)
+
+    head, *rows = text.splitlines()
+    assert head.split() == ["AGENT", "MODEL", "(EFFORT)", "CONTEXT", "ELAPSED", "STATUS"]
+    row = next(line for line in rows if "Explore" in line)
+    assert head.index("MODEL") == row.index("opus-5-5")
+    assert head.index("ELAPSED") + len("ELAPSED") == row.index("1m00s") + len("1m00s")
+    assert head.index("STATUS") == row.index("completed")
+
+
+def test_rows_without_context_keep_columns_aligned():
+    text = render([session([agent("a", ctx=None), agent("b")])], now=NOW)
+
+    assert len({line.index("1m00s") for line in tree_rows(text)}) == 1
+
+
+def test_long_model_names_are_cut_rather_than_shifting_columns():
+    text = render([session([agent("a", model="gpt-5.1-codex-max-preview-2026", effort="xhigh"),
+                            agent("b")])], now=NOW)
+
+    assert len({line.index("1m00s") for line in tree_rows(text)}) == 1
+    assert "…" in tree_rows(text)[0]
 
 
 def test_running_only_keeps_running_agents_and_their_parents():
@@ -79,9 +86,8 @@ def test_running_only_keeps_running_agents_and_their_parents():
                                                       agent("kid-done")])]
     text = render([session(tree)], now=NOW, running_only=True)
 
-    assert "parent" in text and "kid" in text
-    assert "done" not in text.replace("kid-done", "")
-    assert "kid-done" not in text
+    labels = [row.split()[1] for row in tree_rows(text)]
+    assert labels == ["parent", "kid"]
 
 
 def test_running_only_without_running_agents_says_so():
@@ -98,21 +104,36 @@ def test_fit_hides_oldest_finished_agents_first_and_never_running_ones():
     tree = [agent("old", started=1), agent("busy", status="running", started=2),
             agent("mid", started=3), agent("new", started=4)]
 
-    text = render([session(tree)], now=NOW, max_lines=6)
+    lines = render([session(tree)], now=NOW, max_lines=6).splitlines()
 
-    lines = text.splitlines()
     assert len(lines) <= 6
-    shown = [line.split()[1] for line in lines if line.startswith(("├─", "└─"))]
-    assert shown == ["busy", "new"]
-    assert lines[-1].strip().startswith("… ") and "older finished agents hidden" in lines[-1]
+    assert [line.split()[1] for line in tree_rows("\n".join(lines))] == ["busy", "new"]
+    assert lines[-1].strip() == "… 2 older finished agents hidden"
 
 
 def test_fit_counts_hidden_subtrees():
     tree = [agent("old", started=1, children=[agent("k1"), agent("k2")]), agent("new", started=5)]
 
-    text = render([session(tree)], now=NOW, max_lines=5)
+    assert "… 3 older finished agents hidden" in render([session(tree)], now=NOW, max_lines=5)
 
-    assert "… 3 older finished agents hidden" in text
+
+def test_fit_folds_finished_children_of_a_running_agent():
+    kids = [agent(f"k{n}", started=n) for n in range(10)]
+    tree = [agent("boss", status="running", started=0, children=kids)]
+
+    text = render([session(tree)], now=NOW, max_lines=7)
+
+    assert len(text.splitlines()) <= 7
+    assert "boss" in text and "k9" in text and "k0" not in text
+
+
+def test_rendering_leaves_the_sessions_as_they_were():
+    tree = [agent("old", started=1), agent("busy", status="running", started=2)]
+    sessions = [session(tree)]
+
+    render(sessions, now=NOW, running_only=True, max_lines=4)
+
+    assert [a.label for a in sessions[0].agents] == ["old", "busy"]
 
 
 def test_narrow_width_truncates_labels_with_ellipsis():
@@ -123,10 +144,17 @@ def test_narrow_width_truncates_labels_with_ellipsis():
     assert len(row) <= 90
 
 
-def test_color_wraps_status_in_ansi():
+def test_color_wraps_status_by_state():
     text = render([session([agent("a", status="running", started=NOW)])], now=NOW, color=True)
 
     assert "\033[1;33mrunning\033[0m" in text
+
+
+def test_lines_come_with_the_agent_each_one_shows():
+    lines, keys = render_lines([session([agent("a")])], now=NOW)
+
+    assert dict(zip(keys, lines)).keys() >= {("s1", "main"), ("s1", "a")}
+    assert keys[0] is None  # the header
 
 
 @pytest.mark.parametrize(("n", "out"), [(None, "-"), (999, "999"), (1500, "2k"),
@@ -143,57 +171,3 @@ def test_fmt_window():
                                            (3 * 3600 + 120, "3h02m")])
 def test_fmt_duration(secs, out):
     assert fmt_duration(secs) == out
-
-
-def test_header_names_the_columns_and_lines_up_with_them():
-    text = render([session([agent("Explore: look")])], now=NOW)
-
-    head, *rows = text.splitlines()
-    assert head.split() == ["AGENT", "MODEL", "(EFFORT)", "CONTEXT", "ELAPSED", "STATUS"]
-    row = next(line for line in rows if "Explore" in line)
-    assert head.index("MODEL") == row.index("opus-5-5")
-    assert head.index("ELAPSED") + len("ELAPSED") == row.index("1m00s") + len("1m00s")
-    assert head.index("STATUS") == row.index("completed")
-
-
-def test_header_can_be_left_out():
-    assert not render([session([])], now=NOW, header=False).startswith("AGENT")
-
-
-def test_rows_without_context_keep_columns_aligned():
-    text = render([session([agent("a", ctx=None), agent("b")])], now=NOW)
-
-    ends = {line.index("1m00s") for line in text.splitlines() if line.startswith(("├─", "└─"))}
-    assert len(ends) == 1
-
-
-def test_fit_leaves_room_for_the_header():
-    tree = [agent(f"a{n}", started=n) for n in range(10)]
-
-    assert len(render([session(tree)], now=NOW, max_lines=6).splitlines()) <= 6
-
-
-def test_control_characters_in_transcript_text_are_neutralised():
-    s = session([agent("evil: \x1b]0;pwned\x07name\nnext")], title="t\x1b[2Jx")
-
-    text = render([s], now=NOW)
-
-    assert "\x1b" not in text and "\x07" not in text
-    assert len(text.splitlines()) == 4
-
-
-def test_fit_folds_finished_children_of_a_running_agent():
-    kids = [agent(f"k{n}", started=n) for n in range(10)]
-    tree = [agent("boss", status="running", started=0, children=kids)]
-
-    text = render([session(tree)], now=NOW, max_lines=7)
-
-    assert len(text.splitlines()) <= 7
-    assert "boss" in text and "k9" in text and "k0" not in text
-
-
-def test_escape_sequences_in_model_effort_kind_and_id_are_neutralised():
-    s = session([agent("a", model="opus\x1b[2J", effort="hi\x1b]0;x\x07")], sid="s\x1b[1m1")
-    s.kind = "inter\x1b[31mactive"
-
-    assert "\x1b" not in render([s], now=NOW).replace("\x1b[0m", "")

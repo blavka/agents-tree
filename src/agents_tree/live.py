@@ -2,24 +2,27 @@
 
 Keys: ↑/↓ (j/k, the wheel) select, Enter (→, l, a click) opens the detail, Esc
 (←, h, q) goes back, q quits from the tree, r toggles running-only.
+
+Data loads on a background thread every `interval` seconds, so keys never wait
+for a refresh.
 """
 
 from __future__ import annotations
 
 import contextlib
-import copy
 import os
 import re
 import select
 import shutil
 import signal
 import sys
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from agents_tree.model import Session
-from agents_tree.render import Key, find_agent, render_detail, render_lines
+from agents_tree.render import Key, find_agent, render_detail, render_lines, style
 
 Event = str | tuple[str, int]
 
@@ -33,6 +36,7 @@ _TILDE = {"1": "home", "7": "home", "4": "end", "8": "end", "5": "pgup", "6": "p
 _CHARS = {"k": "up", "j": "down", "l": "open", "\r": "open", "\n": "open", "h": "back",
           "g": "home", "G": "end", " ": "pgdn", "q": "q", "Q": "q", "\x03": "quit",
           "r": "toggle", "R": "toggle", "\x1b": "back"}
+_FAR = 10**9
 
 
 def parse_keys(data: str) -> list[Event]:
@@ -62,10 +66,17 @@ class View:
     running_only: bool = False
     selected: Key | None = None
     detail: bool = False
-    scroll: int = 0
-    # What the last frame drew: the agent on each body line, and the body height.
+    scroll: int = 0  # first body line shown (of the tree, or of the detail)
+    # What the last frame drew: the agent on each screen line (for clicks), every
+    # agent row of the tree in order (for moving the selection), and the page height.
     screen_keys: list[Key | None] = field(default_factory=list)
+    row_keys: list[Key] = field(default_factory=list)
     page: int = 1
+
+
+def _step(view: View, event: Event) -> int | None:
+    return {"up": -1, "down": 1, "pgup": -view.page, "pgdn": view.page,
+            "home": -_FAR, "end": _FAR}.get(event) if isinstance(event, str) else None
 
 
 def handle(view: View, event: Event) -> bool:
@@ -73,20 +84,19 @@ def handle(view: View, event: Event) -> bool:
     if event == "quit":
         return False
     if event == "toggle":
-        view.running_only = not view.running_only
+        view.running_only, view.scroll = not view.running_only, 0
         return True
+    step = _step(view, event)
     if view.detail:
-        moves = {"up": -1, "down": 1, "pgup": -view.page, "pgdn": view.page,
-                 "home": -10**9, "end": 10**9}
-        if event in moves:
-            view.scroll = max(view.scroll + moves[event], 0)  # draw() clamps the end
+        if step is not None:
+            view.scroll = max(view.scroll + step, 0)  # draw() clamps the end
         elif event in ("back", "q"):
-            view.detail = False
+            view.detail, view.scroll = False, 0
         return True
 
     if event == "q":
         return False
-    selectable = [k for k in view.screen_keys if k]
+    selectable = view.row_keys
     if isinstance(event, tuple):
         row = event[1] - 1
         key = view.screen_keys[row] if 0 <= row < len(view.screen_keys) else None
@@ -99,9 +109,7 @@ def handle(view: View, event: Event) -> bool:
         if not view.selected:
             return False
         view.selected = None
-    elif selectable and event in ("up", "down", "pgup", "pgdn", "home", "end"):
-        step = {"up": -1, "down": 1, "pgup": -view.page, "pgdn": view.page,
-                "home": -len(selectable), "end": len(selectable)}[event]
+    elif selectable and step is not None:
         if view.selected in selectable:
             at = selectable.index(view.selected) + step
         else:
@@ -110,46 +118,89 @@ def handle(view: View, event: Event) -> bool:
     return True
 
 
-def draw(view: View, sessions: list[Session], error: str | None, *, cols: int, rows: int,
-         interval: float, window: int | None, color: bool, now: float | None = None) -> list[str]:
+def draw(view: View, sessions: list[Session] | None, error: str | None, *, cols: int,
+         rows: int, interval: float, color: bool, now: float | None = None) -> list[str]:
     """The whole screen: body lines, then the footer on the last line."""
     room = max(rows - 1, 1)
-
-    def dim(text: str) -> str:
-        return f"\033[90m{text}\033[0m" if color else text
-
     view.page = max(room - 2, 1)
-    view.screen_keys = []
-    if error:
-        body = [dim(error)]
-        hint = "q quit"
+    keys: list[Key | None] = []
+    more = 0
+    if sessions is None:
+        body, hint = [style(color, "90", "loading…")], "q quit"
+    elif error:
+        body, hint = [style(color, "90", error)], "q quit"
     elif view.detail and view.selected:
         found = find_agent(sessions, view.selected)
-        if found:
-            content = render_detail(*found, now=now, window=window, color=color, width=cols)
-        else:
-            content = [dim("This agent is no longer listed.")]
+        content = (render_detail(*found, now=now, color=color, width=cols) if found
+                   else [style(color, "90", "This agent is no longer listed.")])
         view.scroll = min(view.scroll, max(len(content) - room, 0))
         body = content[view.scroll:view.scroll + room]
         more = len(content) - view.scroll - len(body)
-        hint = "↑↓ scroll · esc back · q quit" + (f" · {more} more lines" if more > 0 else "")
+        hint = "↑↓ scroll · esc back · q quit"
     else:
-        lines, keys = render_lines(copy.deepcopy(sessions), now=now, window=window,
-                                   running_only=view.running_only, color=color, width=cols,
-                                   max_lines=room, selected=view.selected)
-        if len(lines) > room:  # running agents alone do not fit
-            lines = lines[:room - 1] + [dim(f"… {len(lines) - room + 1} more lines "
-                                            "(enlarge the terminal)")]
-            keys = keys[:room - 1] + [None]
-        body, view.screen_keys = lines, keys
+        lines, line_keys = render_lines(sessions, now=now, running_only=view.running_only,
+                                        color=color, width=cols, max_lines=room,
+                                        selected=view.selected)
+        # Running agents alone may not fit: scroll under the pinned header, keeping
+        # the selected row on screen.
+        header, lines, line_keys = lines[0], lines[1:], line_keys[1:]
+        height = room - 1
+        if view.selected in line_keys:
+            at = line_keys.index(view.selected)
+            view.scroll = min(max(view.scroll, at - height + 1), at)
+        view.scroll = min(view.scroll, max(len(lines) - height, 0))
+        body = [header, *lines[view.scroll:view.scroll + height]]
+        keys = [None, *line_keys[view.scroll:view.scroll + height]]
+        view.row_keys = [k for k in line_keys if k]
+        more = len(lines) - view.scroll - (len(body) - 1)
         toggle = "all" if view.running_only else "running only"
         hint = f"↑↓ select · enter detail · r {toggle} · q quit"
-    footer = dim(f"agents-tree · {hint} · every {interval:g}s · " + time.strftime("%H:%M:%S"))
+    view.screen_keys = keys
+    if more > 0:
+        hint += f" · {more} more lines"
+    footer = style(color, "90", f"agents-tree · {hint} · every {interval:g}s · "
+                                + time.strftime("%H:%M:%S"))
     return body + [""] * (room - len(body)) + [footer]
 
 
+class _Loader:
+    """Calls load() every interval on a thread; wakes the UI through a pipe."""
+
+    def __init__(self, load: Callable[[], list[Session]], interval: float) -> None:
+        self.sessions: list[Session] | None = None
+        self.error: str | None = None
+        self.wake_r, self._wake_w = os.pipe()
+        self._load, self._interval = load, interval
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def __enter__(self) -> _Loader:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        os.close(self.wake_r)
+        os.close(self._wake_w)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                sessions, error = self._load(), None
+            except LookupError as e:
+                sessions, error = [], str(e)
+            self.sessions, self.error = sessions, error  # one reference swap each
+            with contextlib.suppress(OSError):
+                os.write(self._wake_w, b".")
+            self._stop.wait(self._interval)
+
+    def drain(self) -> None:
+        with contextlib.suppress(OSError):
+            os.read(self.wake_r, 1024)
+
+
 class _Redraw(Exception):
-    """The terminal was resized: draw again now rather than at the next tick."""
+    """The terminal was resized: draw again now."""
 
 
 def _on_resize(signum, frame):
@@ -170,8 +221,8 @@ def _screen(keys: bool, mouse: bool):
     if keys:
         saved = termios.tcgetattr(sys.stdin.fileno())
         tty.setcbreak(sys.stdin.fileno())
-    mouse_on, mouse_off = ("\033[?1000h\033[?1006h", "\033[?1000l\033[?1006l") if mouse \
-        else ("", "")
+    mouse_on, mouse_off = (("\033[?1000h\033[?1006h", "\033[?1000l\033[?1006l") if mouse
+                           else ("", ""))
     sys.stdout.write("\033[?1049h\033[?25l\033[?7l" + mouse_on)
     sys.stdout.flush()
     try:
@@ -183,44 +234,31 @@ def _screen(keys: bool, mouse: bool):
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, saved)
 
 
-def _read_input(timeout: float, keys: bool) -> str:
-    if not keys:
-        time.sleep(timeout)
-        return ""
-    ready, _, _ = select.select([sys.stdin], [], [], timeout)
-    return os.read(sys.stdin.fileno(), 1024).decode(errors="ignore") if ready else ""
-
-
-def run(load: Callable[[], list[Session]], *, interval: float, window: int | None,
-        color: bool, running_only: bool, mouse: bool) -> None:
-    """Redraw on every key press; reload the data every `interval` seconds."""
+def run(load: Callable[[], list[Session]], *, interval: float, color: bool,
+        running_only: bool, mouse: bool) -> None:
+    """Redraw on every key press and every loaded refresh."""
     keys = sys.stdin.isatty()
     view = View(running_only=running_only)
-    sessions: list[Session] = []
-    error: str | None = None
-    loaded_at: float | None = None
     signal.signal(signal.SIGTERM, _on_term)
     signal.signal(signal.SIGHUP, _on_term)
     signal.signal(signal.SIGWINCH, _on_resize)
-    with _screen(keys, mouse and keys):
+    with _screen(keys, mouse and keys), _Loader(load, interval) as loader:
         while True:
             try:
-                if loaded_at is None or time.monotonic() - loaded_at >= interval:
-                    try:
-                        sessions, error = load(), None
-                    except LookupError as e:
-                        sessions, error = [], str(e)
-                    loaded_at = time.monotonic()
                 cols, rows = shutil.get_terminal_size()
-                screen = draw(view, sessions, error, cols=cols, rows=rows, interval=interval,
-                              window=window, color=color)
+                screen = draw(view, loader.sessions, loader.error, cols=cols, rows=rows,
+                              interval=interval, color=color)
                 sys.stdout.write("\033[H" + "\n".join(line + "\033[K" for line in screen)
                                  + "\033[J")
                 sys.stdout.flush()
-                wait = max(interval - (time.monotonic() - loaded_at), 0.0)
-                events = parse_keys(_read_input(wait, keys))
+                watched = [loader.wake_r, sys.stdin] if keys else [loader.wake_r]
+                ready, _, _ = select.select(watched, [], [], interval)
+                if loader.wake_r in ready:
+                    loader.drain()
+                data = (os.read(sys.stdin.fileno(), 1024).decode(errors="ignore")
+                        if keys and sys.stdin in ready else "")
             except _Redraw:
                 continue
-            for event in events:
+            for event in parse_keys(data):
                 if not handle(view, event):
                     return

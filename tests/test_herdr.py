@@ -1,8 +1,10 @@
 import json
+import os
 import stat
 
 import pytest
 
+import agents_tree.cli
 from agents_tree import herdr
 
 CLAUDE_PANE = {"pane_id": "w1:p1", "agent": "claude", "cwd": "/w/app",
@@ -29,8 +31,11 @@ if sys.argv[1:3] == ["config", "check"]:
     monkeypatch.setenv("HERDR_BIN_PATH", str(script))
     monkeypatch.setenv("HERDR_CONFIG_PATH", str(tmp_path / "config.toml"))
     monkeypatch.setenv("HERDR_PLUGIN_ID", "agents-tree")
+    monkeypatch.setenv("HERDR_PLUGIN_STATE_DIR", str(tmp_path / "state"))
 
     class Fake:
+        config = tmp_path / "config.toml"
+
         def set_panes(self, mapping):
             panes.write_text(json.dumps(mapping))
 
@@ -40,18 +45,17 @@ if sys.argv[1:3] == ["config", "check"]:
         def calls(self):
             return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
-        config = tmp_path / "config.toml"
-
     return Fake()
 
 
 @pytest.mark.parametrize(("pane", "target"), [
-    (CLAUDE_PANE, "sess-1"),
-    ({"agent": "claude", "cwd": "/w/app", "foreground_cwd": "/w/app/sub"}, "/w/app/sub"),
-    ({"agent": "claude", "cwd": "/w/app"}, "/w/app"),
-    ({"agent": "codex", "agent_session": {"agent": "codex", "kind": "id", "value": "x"}}, ""),
-    ({"cwd": "/w/app"}, ""),
-    ({}, ""),
+    (CLAUDE_PANE, ("claude", "sess-1")),
+    ({"agent": "claude", "cwd": "/w/app", "foreground_cwd": "/w/app/sub"}, ("claude", "/w/app/sub")),
+    ({"agent": "claude", "cwd": "/w/app"}, ("claude", "/w/app")),
+    ({"agent": "codex", "agent_session": {"agent": "codex", "kind": "id", "value": "x"}},
+     ("claude", "")),
+    ({"cwd": "/w/app"}, ("claude", "")),
+    ({}, ("claude", "")),
 ])
 def test_target_for(pane, target):
     assert herdr.target_for(pane) == target
@@ -65,7 +69,8 @@ def test_open_passes_the_focused_session_to_the_pane(fake_herdr):
 
     assert fake_herdr.calls()[-1] == [
         "plugin", "pane", "open", "--plugin", "agents-tree", "--entrypoint", "tree",
-        "--placement", "overlay", "--env", "AGENTS_TREE_TARGET=sess-1"]
+        "--placement", "overlay", "--env", "AGENTS_TREE_PROVIDER=claude",
+        "--env", "AGENTS_TREE_TARGET=sess-1"]
 
 
 def test_open_all_ignores_the_focused_session(fake_herdr):
@@ -79,13 +84,35 @@ def test_open_all_ignores_the_focused_session(fake_herdr):
     assert call[-1] == "AGENTS_TREE_TARGET="
 
 
-def test_open_on_our_own_pane_closes_it(fake_herdr):
-    fake_herdr.set_panes({"w1:p9": {"pane_id": "w1:p9", "label": "agents-tree"}})
+def test_open_on_our_own_running_pane_closes_it(fake_herdr):
     fake_herdr.focus("w1:p9")
+    mark = herdr._mark_path("w1:p9")
+    mark.parent.mkdir(parents=True)
+    mark.write_text(str(os.getpid()))
 
     herdr.run(["open", "focused"])
 
     assert fake_herdr.calls()[-1] == ["plugin", "pane", "close", "w1:p9"]
+
+
+def test_a_mark_left_by_a_dead_pane_does_not_count(fake_herdr):
+    fake_herdr.focus("w1:p9")
+    mark = herdr._mark_path("w1:p9")
+    mark.parent.mkdir(parents=True)
+    mark.write_text("999999999")
+
+    herdr.run(["open", "focused"])
+
+    assert fake_herdr.calls()[-1][:3] == ["plugin", "pane", "open"]
+
+
+def test_a_pane_titled_like_us_is_not_mistaken_for_ours(fake_herdr):
+    fake_herdr.set_panes({"w1:p3": {"pane_id": "w1:p3", "label": "agents-tree"}})
+    fake_herdr.focus("w1:p3")
+
+    herdr.run(["open", "focused"])
+
+    assert fake_herdr.calls()[-1][:3] == ["plugin", "pane", "open"]
 
 
 def test_open_without_context_opens_all_sessions(fake_herdr, monkeypatch):
@@ -134,6 +161,15 @@ def test_setup_keys_leaves_bound_keys_alone(fake_herdr):
     assert 'key = "prefix+shift+a"' in block
 
 
+def test_single_quoted_or_uppercase_bindings_count_as_taken(fake_herdr):
+    fake_herdr.config.write_text("[[keys.command]]\nkey = 'Prefix+A'\ncommand = 'x.y'\n")
+
+    herdr.run(["keys", "setup"])
+
+    block = fake_herdr.config.read_text().split(herdr.BEGIN)[1]
+    assert 'key = "prefix+a"' not in block
+
+
 def test_setup_keys_refuses_a_config_that_already_fails_check(fake_herdr):
     fake_herdr.config.write_text("BROKEN\n")
 
@@ -159,18 +195,24 @@ def test_remove_keys_backs_up_first(fake_herdr):
     assert (fake_herdr.config.parent / "config.toml.agents-tree-backup").read_text() == with_keys
 
 
-def test_single_quoted_or_uppercase_bindings_count_as_taken(fake_herdr):
-    fake_herdr.config.write_text("[[keys.command]]\nkey = 'Prefix+A'\ncommand = 'x.y'\n")
+def test_pane_marks_itself_while_it_runs_and_passes_its_target(fake_herdr, monkeypatch):
+    seen = []
 
-    herdr.run(["keys", "setup"])
+    def fake_main(argv):
+        seen.append((argv, herdr.is_our_pane("w1:p7")))
+        return 0
 
-    block = fake_herdr.config.read_text().split(herdr.BEGIN)[1]
-    assert 'key = "prefix+a"' not in block
+    monkeypatch.setattr(agents_tree.cli, "main", fake_main)
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:p7")
+    monkeypatch.setenv("AGENTS_TREE_TARGET", "-weird-dir")
+
+    herdr.run(["pane"])
+
+    assert seen == [(["-w", "--provider", "claude", "--", "-weird-dir"], True)]
+    assert not herdr.is_our_pane("w1:p7")
 
 
 def test_pane_shows_a_crash_and_waits(monkeypatch, capsys):
-    import agents_tree.cli
-
     def boom(argv):
         raise RuntimeError("kaput")
 
@@ -181,15 +223,3 @@ def test_pane_shows_a_crash_and_waits(monkeypatch, capsys):
     assert herdr.run(["pane"]) == 1
     assert "kaput" in capsys.readouterr().err
     assert waited
-
-
-def test_pane_passes_the_target_after_a_double_dash(monkeypatch):
-    import agents_tree.cli
-
-    seen = []
-    monkeypatch.setattr(agents_tree.cli, "main", lambda argv: seen.append(argv) or 0)
-    monkeypatch.setenv("AGENTS_TREE_TARGET", "-weird-dir")
-
-    herdr.run(["pane"])
-
-    assert seen == [["-w", "--", "-weird-dir"]]

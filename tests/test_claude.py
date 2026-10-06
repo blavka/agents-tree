@@ -3,8 +3,9 @@ import os
 import time
 
 import pytest
-from conftest import T0, assistant, notification, title, tool_result
+from conftest import T0, assistant, notification, title, tool_result, user
 
+from agents_tree.model import BLOCKED, DONE, FAILED, INACTIVE, RUNNING, STALE, WAITING
 from agents_tree.providers import claude
 
 
@@ -38,16 +39,17 @@ def test_title_falls_back_to_session_id_prefix(fake):
     assert claude.load(path).title == "01234567"
 
 
-@pytest.mark.parametrize(("records_in_main", "background", "age", "expected"), [
-    ([notification(5, "a1", "completed")], True, 0, "completed"),
-    ([notification(5, "a1", "failed")], True, 0, "failed"),
-    ([tool_result(5, "tu1")], False, 0, "done"),
+@pytest.mark.parametrize(("records_in_main", "background", "age", "state", "status"), [
+    ([notification(5, "a1", "completed")], True, 0, DONE, "completed"),
+    ([notification(5, "a1", "failed")], True, 0, FAILED, "failed"),
+    ([notification(5, "a1", "killed")], True, 0, FAILED, "killed"),
+    ([tool_result(5, "tu1")], False, 0, DONE, "done"),
     # A background agent's immediate "launched" tool_result does not mean it finished.
-    ([tool_result(5, "tu1")], True, 0, "running"),
-    ([], True, 0, "running"),
-    ([], True, claude.STALE_AFTER_SECS + 60, "stale"),
+    ([tool_result(5, "tu1")], True, 0, RUNNING, "running"),
+    ([], True, 0, RUNNING, "running"),
+    ([], True, claude.STALE_AFTER_SECS + 60, STALE, "stale"),
 ])
-def test_subagent_status(fake, records_in_main, background, age, expected):
+def test_subagent_state(fake, records_in_main, background, age, state, status):
     path = fake.session("s1", "/w/app", [assistant(0, tool_uses=["tu1"]), *records_in_main])
     now = time.time()
     fake.subagent(path, "a1", [assistant(1)], tool_use_id="tu1", background=background,
@@ -55,8 +57,26 @@ def test_subagent_status(fake, records_in_main, background, age, expected):
 
     agent = claude.load(path, now=now).agents[0]
 
-    assert agent.status == expected
-    assert (agent.ended is None) == (expected == "running")
+    assert (agent.state, agent.status) == (state, status)
+    assert (agent.ended is None) == (state == RUNNING)
+
+
+@pytest.mark.parametrize(("live_status", "state"), [
+    ("busy", RUNNING), ("working", RUNNING), ("idle", WAITING), ("blocked", BLOCKED),
+    ("done", DONE), ("something new", WAITING),
+])
+def test_main_state_from_the_live_session(fake, live_status, state):
+    path = fake.session("s1", "/w/app", [assistant(0)])
+
+    main = claude.load(path, {"sessionId": "s1", "status": live_status}).main
+
+    assert (main.state, main.status) == (state, live_status)
+
+
+def test_session_that_is_not_running_is_inactive(fake):
+    main = claude.load(fake.session("s1", "/w/app", [assistant(0)])).main
+
+    assert (main.state, main.status) == (INACTIVE, "not running")
 
 
 def test_nested_subagent_hangs_under_the_agent_that_spawned_it(fake):
@@ -98,16 +118,48 @@ def test_garbage_lines_are_skipped(fake):
     assert claude.load(path).main.context_tokens == 5000
 
 
-def test_changed_transcript_is_read_again(fake):
+def test_appended_lines_are_read_on_top_of_the_earlier_parse(fake):
     path = fake.session("s1", "/w/app", [assistant(0, context=1000)])
     assert claude.load(path).main.context_tokens == 1000
 
     with path.open("a") as f:
-        f.write(__import__("json").dumps(assistant(5, context=9000)) + "\n")
-    st = path.stat()
-    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+        f.write(json.dumps(assistant(5, context=9000)) + "\n")
 
     assert claude.load(path).main.context_tokens == 9000
+
+
+def test_a_line_still_being_written_waits_for_its_end(fake):
+    path = fake.session("s1", "/w/app", [assistant(0, context=1000)])
+    line = json.dumps(assistant(5, context=9000))
+    with path.open("a") as f:
+        f.write(line[:40])
+
+    assert claude.load(path).main.context_tokens == 1000
+
+    with path.open("a") as f:
+        f.write(line[40:] + "\n")
+
+    assert claude.load(path).main.context_tokens == 9000
+
+
+def test_a_rewritten_transcript_is_parsed_from_the_start(fake):
+    path = fake.session("s1", "/w/app", [assistant(0, context=1000), assistant(1, context=2000)])
+    claude.load(path)
+
+    fake.session("s1", "/w/app", [assistant(0, context=3000)])  # shorter: rewritten
+
+    assert claude.load(path).main.context_tokens == 3000
+
+
+def test_sessions_forget_transcripts_they_no_longer_read(fake):
+    old = fake.session("old", "/w/a", [assistant(0)])
+    claude.read_transcript(old)
+    fake.session("s1", "/w/a", [assistant(0)])
+    fake.live = [{"sessionId": "s1", "cwd": "/w/a", "kind": "interactive", "status": "busy"}]
+
+    claude.sessions(None)
+
+    assert old not in claude._cache
 
 
 def test_find_without_target_lists_live_sessions(fake):
@@ -118,7 +170,7 @@ def test_find_without_target_lists_live_sessions(fake):
 
     found = claude.find(None)
 
-    assert [p.stem for p, _ in found] == ["s1"]
+    assert [(p.stem, cwd) for p, _, cwd in found] == [("s1", "/w/a")]
 
 
 def test_find_without_live_sessions_raises(fake):
@@ -133,7 +185,7 @@ def test_find_directory_prefers_sessions_running_there(fake, tmp_path):
     fake.session("live", str(work), [assistant(0)])
     fake.live = [{"sessionId": "live", "cwd": str(work), "kind": "interactive", "status": "idle"}]
 
-    assert [p.stem for p, _ in claude.find(str(work))] == ["live"]
+    assert [p.stem for p, _, _ in claude.find(str(work))] == ["live"]
 
 
 def test_find_directory_falls_back_to_newest_session(fake, tmp_path):
@@ -144,10 +196,9 @@ def test_find_directory_falls_back_to_newest_session(fake, tmp_path):
     os.utime(old, (T0, T0))
     os.utime(new, (T0 + 100, T0 + 100))
 
-    [(path, live)] = claude.find(str(work))
+    [(path, live, cwd)] = claude.find(str(work))
 
-    assert path.stem == "new"
-    assert live is not None and live["status"] == "not running"
+    assert (path.stem, live, cwd) == ("new", None, str(work))
 
 
 def test_find_directory_without_sessions_raises(fake, tmp_path):
@@ -158,10 +209,9 @@ def test_find_directory_without_sessions_raises(fake, tmp_path):
 def test_find_session_by_id_prefix(fake):
     fake.session("abcdef12-3456", "/w/a", [assistant(0)])
 
-    [(path, live)] = claude.find("abcdef")
+    [(path, live, _)] = claude.find("abcdef")
 
-    assert path.stem == "abcdef12-3456"
-    assert live == {"status": "not running"}
+    assert (path.stem, live) == ("abcdef12-3456", None)
 
 
 def test_find_unknown_session_raises(fake):
@@ -169,11 +219,17 @@ def test_find_unknown_session_raises(fake):
         claude.find("nope")
 
 
+def test_transcript_is_found_in_the_sessions_own_project_without_a_search(fake, monkeypatch):
+    path = fake.session("s1", "/w/a", [assistant(0)])
+    monkeypatch.setattr(claude.glob, "escape", lambda _: pytest.fail("searched"))
+
+    assert claude.transcript_path("s1", "/w/a") == path
+
+
 def test_load_takes_cwd_kind_and_status_from_the_live_entry(fake):
     path = fake.session("s1", "/w/a", [assistant(0)])
 
-    s = claude.load(path, {"sessionId": "s1", "cwd": "/w/a", "kind": "background",
-                           "status": "working"})
+    s = claude.load(path, {"sessionId": "s1", "kind": "background", "status": "working"}, "/w/a")
 
     assert (s.cwd, s.kind, s.main.status) == ("/w/a", "background", "working")
 
@@ -187,26 +243,41 @@ def test_context_window_by_model(model, window):
     assert claude.context_window(model) == window
 
 
+def test_live_sessions_are_reused_for_a_few_seconds(monkeypatch):
+    calls = []
+    monkeypatch.setattr(claude, "_query_live", lambda: calls.append(1) or [])
+    monkeypatch.setattr(claude, "_live_cache", None)
+
+    claude.live_sessions()
+    claude.live_sessions()
+
+    assert len(calls) == 1
+
+
 # --- regressions from review -------------------------------------------------
 
-def _two_agent_session(fake, main_extra=(), agent_records=None, *, meta=None, mtime=None):
+def _two_agent_session(fake, main_extra=(), agent_records=None, *, mtime=None, **meta):
     path = fake.session("s1", "/w/app", [assistant(0, tool_uses=["tu1"]), *main_extra])
     fake.subagent(path, "a1", agent_records or [assistant(1)], tool_use_id="tu1",
-                  background=True, mtime=mtime)
-    if meta:
-        meta_path = path.with_suffix("") / "subagents" / "agent-a1.meta.json"
-        data = json.loads(meta_path.read_text())
-        data.update(meta)
-        meta_path.write_text(json.dumps(data))
+                  background=True, mtime=mtime, **meta)
     return path
 
 
-def test_agent_resumed_after_its_notification_is_running(fake):
+def test_agent_woken_by_a_message_after_its_notification_is_running(fake):
     now = T0 + 200
+    woken = user(150, "Another Claude session sent a message", isMeta=True)
     path = _two_agent_session(fake, [notification(5, "a1")],
-                              [assistant(1), assistant(190)], mtime=now - 10)
+                              [assistant(1), woken, assistant(190)], mtime=now - 10)
 
-    assert claude.load(path, now=now).agents[0].status == "running"
+    assert claude.load(path, now=now).agents[0].state == RUNNING
+
+
+def test_agent_writing_its_last_lines_after_the_notification_stays_done(fake):
+    now = T0 + 60
+    path = _two_agent_session(fake, [notification(5, "a1")], [assistant(1), assistant(8)],
+                              mtime=now - 10)
+
+    assert claude.load(path, now=now).agents[0].state == DONE
 
 
 def test_newest_notification_wins_whatever_file_it_is_in(fake):
@@ -221,15 +292,15 @@ def test_newest_notification_wins_whatever_file_it_is_in(fake):
     assert s.agents[0].children[0].status == "completed"
 
 
-@pytest.mark.parametrize(("live", "expected"), [
-    ({"sessionId": "s1", "status": "working"}, "idle"),
-    (None, "stale"),
+@pytest.mark.parametrize(("live", "state"), [
+    ({"sessionId": "s1", "status": "working"}, WAITING),
+    (None, STALE),
 ])
-def test_teammate_without_notification_is_idle_while_the_session_lives(fake, live, expected):
-    path = _two_agent_session(fake, meta={"taskKind": "in_process_teammate", "teamName": "t",
-                                          "toolUseId": None}, mtime=T0)
+def test_teammate_without_notification_waits_while_the_session_lives(fake, live, state):
+    path = _two_agent_session(fake, mtime=T0, taskKind="in_process_teammate", teamName="t",
+                              toolUseId=None)
 
-    assert claude.load(path, live, now=T0 + 1000).agents[0].status == expected
+    assert claude.load(path, live, now=T0 + 1000).agents[0].state == state
 
 
 def test_agent_waiting_on_a_long_tool_call_stays_running(fake):
@@ -237,16 +308,14 @@ def test_agent_waiting_on_a_long_tool_call_stays_running(fake):
 
     s = claude.load(path, {"sessionId": "s1", "status": "busy"}, now=T0 + 1000)
 
-    assert s.agents[0].status == "running"
+    assert s.agents[0].state == RUNNING
 
 
 def test_async_launch_answer_does_not_finish_an_old_style_agent(fake):
-    launched = {"type": "user", "timestamp": "2026-10-07T06:00:02Z", "message": {"content": [
-        {"type": "tool_result", "tool_use_id": "tu1",
-         "content": [{"type": "text", "text": "Async agent launched successfully."}]}]}}
-    path = _two_agent_session(fake, [launched], meta={"requestShape": None}, mtime=T0)
+    launched = tool_result(2, "tu1", [{"type": "text", "text": "Async agent launched successfully."}])
+    path = _two_agent_session(fake, [launched], mtime=T0, requestShape=None)
 
-    assert claude.load(path, now=T0 + 1000).agents[0].status == "stale"
+    assert claude.load(path, now=T0 + 1000).agents[0].state == STALE
 
 
 def test_glob_characters_in_a_session_target_do_not_crash(fake):
@@ -266,13 +335,8 @@ def test_ambiguous_prefix_names_the_candidates(fake):
 
 def test_parent_agent_id_wins_and_cycles_do_not_lose_agents(fake):
     path = fake.session("s1", "/w/app", [assistant(0)])
-    fake.subagent(path, "x", [assistant(1)], description="x")
-    fake.subagent(path, "y", [assistant(2)], description="y")
-    for aid, parent in (("x", "y"), ("y", "x")):
-        meta_path = path.with_suffix("") / "subagents" / f"agent-{aid}.meta.json"
-        data = json.loads(meta_path.read_text())
-        data["parentAgentId"] = parent
-        meta_path.write_text(json.dumps(data))
+    fake.subagent(path, "x", [assistant(1)], description="x", parentAgentId="y")
+    fake.subagent(path, "y", [assistant(2)], description="y", parentAgentId="x")
 
     s = claude.load(path, now=T0 + 10)
 
@@ -288,10 +352,15 @@ def test_custom_title_beats_the_generated_one_and_live_name_fills_in(fake):
     assert claude.load(plain, {"sessionId": "s2", "name": "wimber-fb"}).title == "wimber-fb"
 
 
-def test_context_beyond_the_inferred_window_means_a_long_window(fake):
-    path = fake.session("s1", "/w/a", [assistant(0, model="claude-sonnet-4-5", context=400_000)])
+def test_long_window_evidence_applies_to_the_whole_session(fake):
+    path = fake.session("s1", "/w/a", [assistant(0, model="claude-sonnet-4-5", context=400_000,
+                                                 tool_uses=["tu1"])])
+    fake.subagent(path, "a1", [assistant(1, model="claude-sonnet-4-5", context=10_000)],
+                  tool_use_id="tu1")
 
-    assert claude.load(path).main.context_window == 1_000_000
+    s = claude.load(path, now=T0 + 10)
+
+    assert s.main.context_window == s.agents[0].context_window == 1_000_000
 
 
 def test_odd_field_types_are_ignored(fake):
@@ -304,21 +373,18 @@ def test_odd_field_types_are_ignored(fake):
     assert (s.main.model, s.main.context_tokens) == ("opus-5-5", 3000)
 
 
+# --- detail ------------------------------------------------------------------------
+
 def test_detail_collects_prompt_tools_last_message_and_deduplicated_usage(fake):
     path = fake.session("s1", "/w/app", [assistant(0, tool_uses=["tu1"])])
-    first = assistant(2, tool_uses=["b1"])
-    first["requestId"] = "req1"
-    second = assistant(2, tool_uses=["b2"])  # same response, second content block
-    second["requestId"] = "req1"
+    first = assistant(2, tool_uses=["b1"], request="req1")
+    second = assistant(2, tool_uses=["b2"], request="req1")  # same response, next block
     second["message"]["content"][0]["name"] = "Read"
-    reply = assistant(4)
-    reply["requestId"] = "req2"
+    reply = assistant(4, request="req2")
     reply["message"]["content"] = [{"type": "text", "text": "All done."}]
     reply["message"]["usage"]["output_tokens"] = 40
     fake.subagent(path, "a1", [
-        {"type": "user", "timestamp": "2026-10-07T06:00:01Z",
-         "message": {"role": "user", "content": "Look for the bug."}},
-        {"type": "user", "isMeta": True, "message": {"content": "<system-reminder>x"}},
+        user(1, "Look for the bug."), user(1, "<system-reminder>x", isMeta=True),
         first, second, tool_result(3, "b1"), tool_result(3, "b2"), reply,
     ], tool_use_id="tu1")
 
@@ -335,9 +401,7 @@ def test_detail_collects_prompt_tools_last_message_and_deduplicated_usage(fake):
 
 def test_main_detail_shows_the_last_user_prompt(fake):
     path = fake.session("s1", "/w/app", [
-        {"type": "user", "message": {"content": "first ask"}},
-        assistant(1),
-        {"type": "user", "message": {"content": [{"type": "text", "text": "second ask"}]}},
+        user(0, "first ask"), assistant(1), user(2, [{"type": "text", "text": "second ask"}]),
     ])
 
     d = claude.load(path).main.detail

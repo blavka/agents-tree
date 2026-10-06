@@ -6,10 +6,12 @@ import argparse
 import os
 import signal
 import sys
+from collections.abc import Callable
 
 from agents_tree import __version__, live
+from agents_tree.model import Session, override_window, sanitize
 from agents_tree.providers import PROVIDERS
-from agents_tree.render import render
+from agents_tree.render import render, style
 
 DESCRIPTION = "Show coding-agent sessions and their subagents as a tree: " \
               "model (effort), context use, elapsed time and status."
@@ -70,14 +72,15 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     return args
 
 
-def frame(args: argparse.Namespace, running_only: bool, color: bool,
-          width: int | None = None, max_lines: int | None = None) -> tuple[str, bool]:
-    try:
+def loader(args: argparse.Namespace) -> Callable[[], list[Session]]:
+    """Sessions as the views get them: sanitised once, with --window applied."""
+    def load() -> list[Session]:
         sessions = PROVIDERS[args.provider].sessions(args.target)
-    except LookupError as e:
-        return (f"\033[90m{e}\033[0m" if color else str(e)), False
-    return render(sessions, window=args.window, running_only=running_only, color=color,
-                  width=width, max_lines=max_lines), True
+        sanitize(sessions)
+        override_window(sessions, args.window)
+        return sessions
+
+    return load
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -85,13 +88,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     color = args.color == "always" or (args.color == "auto" and sys.stdout.isatty()
                                        and not os.environ.get("NO_COLOR"))
+    load = loader(args)
     if not args.watch:
-        text, ok = frame(args, args.running, color)
-        print(text)
-        return 0 if ok else 1
+        try:
+            sessions = load()
+        except LookupError as e:
+            print(style(color, "90", str(e)))
+            return 1
+        print(render(sessions, running_only=args.running, color=color))
+        return 0
     try:
-        live.run(lambda: PROVIDERS[args.provider].sessions(args.target), interval=args.interval,
-                 window=args.window, color=color, running_only=args.running, mouse=args.mouse)
+        live.run(load, interval=args.interval, color=color, running_only=args.running,
+                 mouse=args.mouse)
     except KeyboardInterrupt:
         pass
     return 0

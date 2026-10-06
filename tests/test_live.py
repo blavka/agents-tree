@@ -1,7 +1,7 @@
 import re
 
 import pytest
-from test_render import NOW, agent, session
+from conftest import NOW, agent, session
 
 from agents_tree.live import View, draw, handle, parse_keys
 from agents_tree.model import Detail
@@ -20,9 +20,8 @@ def test_parse_keys(data, events):
     assert parse_keys(data) == events
 
 
-def _drawn(view, sessions, rows=20, cols=140):
-    return draw(view, sessions, None, cols=cols, rows=rows, interval=2, window=None,
-                color=False, now=NOW)
+def _drawn(view, sessions, rows=20, cols=140, color=False, error=None):
+    return draw(view, sessions, error, cols=cols, rows=rows, interval=2, color=color, now=NOW)
 
 
 def _sessions():
@@ -57,10 +56,7 @@ def test_up_without_selection_starts_at_the_bottom():
 
 
 def test_selected_row_is_highlighted():
-    view, sessions = View(selected=("s1", "Plan: think")), _sessions()
-
-    screen = draw(view, sessions, None, cols=140, rows=20, interval=2, window=None,
-                  color=True, now=NOW)
+    screen = _drawn(View(selected=("s1", "Plan: think")), _sessions(), color=True)
 
     row = next(line for line in screen if "Plan: think" in line)
     assert row.startswith("\033[30;46m")
@@ -76,13 +72,27 @@ def test_click_opens_the_detail_of_the_row_under_the_pointer():
     assert view.detail and view.selected == ("s1", "Explore: look")
 
 
-def test_click_on_a_header_does_nothing():
+def test_click_on_the_header_does_nothing():
     view = View()
     _drawn(view, _sessions())
 
     handle(view, ("click", 1))
 
     assert not view.detail and view.selected is None
+
+
+def test_tree_taller_than_the_screen_scrolls_to_keep_the_selection_visible():
+    running = [agent(f"r{n}", status="running", started=n) for n in range(30)]
+    view, sessions = View(), [session(running)]
+    _drawn(view, sessions, rows=10)
+
+    for _ in range(25):
+        handle(view, "down")
+    screen = _drawn(view, sessions, rows=10)
+
+    assert screen[0].startswith("AGENT")  # the header stays put
+    assert any(f"r{23}" in line for line in screen[1:-1])
+    assert "more lines" in screen[-1]
 
 
 def test_detail_shows_prompt_tools_and_last_message():
@@ -143,7 +153,10 @@ def test_footer_sits_on_the_last_line():
 
 
 def test_error_is_shown_instead_of_the_tree():
-    screen = draw(View(), [], "no running Claude Code sessions", cols=80, rows=5, interval=2,
-                  window=None, color=False, now=NOW)
+    screen = _drawn(View(), [], rows=5, error="no running Claude Code sessions")
 
     assert screen[0] == "no running Claude Code sessions"
+
+
+def test_first_frame_says_it_is_loading():
+    assert _drawn(View(), None, rows=5)[0] == "loading…"

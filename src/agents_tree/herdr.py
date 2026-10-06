@@ -8,9 +8,9 @@
 `python3 -m agents_tree.herdr keys setup|remove`          (plugin actions)
     Adds or removes a marked block of key bindings in herdr's config.toml.
 
-scope "focused": the focused pane's Claude Code session (by the session id
-herdr's Claude integration reports, else the pane's directory); every running
-session when the pane holds no Claude agent. scope "all": every running session.
+scope "focused": the focused pane's session (by the session id herdr's agent
+integration reports, else the pane's directory) when agents-tree reads that
+agent; every running session otherwise. scope "all": every running session.
 """
 
 from __future__ import annotations
@@ -21,16 +21,25 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
+from agents_tree.providers import PROVIDERS
+
 TARGET_ENV = "AGENTS_TREE_TARGET"
+PROVIDER_ENV = "AGENTS_TREE_PROVIDER"
 PLUGIN_ID = "agents-tree"
-PANE_TITLE = "agents-tree"
+DEFAULT_PROVIDER = "claude"
 PLACEMENTS = ("overlay", "split", "tab", "zoomed")
 
 
 def _herdr() -> str:
     return os.environ.get("HERDR_BIN_PATH") or "herdr"
+
+
+def _plugin_id() -> str:
+    return os.environ.get("HERDR_PLUGIN_ID") or PLUGIN_ID
 
 
 def _run(*args: str) -> subprocess.CompletedProcess | None:
@@ -40,60 +49,73 @@ def _run(*args: str) -> subprocess.CompletedProcess | None:
         return None
 
 
-def _herdr_json(*args: str) -> dict:
+def _json_dict(text: str | None) -> dict:
     try:
-        out = subprocess.run([_herdr(), *args], capture_output=True, text=True,
-                             timeout=10).stdout
-        data = json.loads(out)
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        data = json.loads(text or "{}")
+    except json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
 
 
 def focused_pane_id() -> str | None:
     """The pane focused when the plugin was invoked (HERDR_PANE_ID is our own pane)."""
-    try:
-        ctx = json.loads(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON") or "{}")
-    except json.JSONDecodeError:
-        return None
-    pane = ctx.get("focused_pane_id") if isinstance(ctx, dict) else None
+    pane = _json_dict(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON")).get("focused_pane_id")
     return pane if isinstance(pane, str) and pane else None
 
 
 def pane_info(pane_id: str) -> dict:
-    result = _herdr_json("pane", "get", pane_id).get("result") or {}
-    pane = result.get("pane", result) if isinstance(result, dict) else {}
+    result = _run("pane", "get", pane_id)
+    info = _json_dict(result.stdout if result else None).get("result") or {}
+    pane = info.get("pane", info) if isinstance(info, dict) else {}
     return pane if isinstance(pane, dict) else {}
 
 
-def target_for(pane: dict) -> str:
-    """agents-tree target for a pane: a session id, a directory, or "" for all sessions."""
+def target_for(pane: dict) -> tuple[str, str]:
+    """(provider, target) for a pane: its session id or directory when agents-tree
+    reads its agent; every running session of the default provider otherwise."""
     session = pane.get("agent_session")
     if not isinstance(session, dict):
         session = {}
     agent = session.get("agent") or pane.get("agent")
-    if agent != "claude":
-        return ""
+    if agent not in PROVIDERS:
+        return DEFAULT_PROVIDER, ""
     if session.get("kind") == "id" and session.get("value"):
-        return str(session["value"])
-    return str(pane.get("foreground_cwd") or pane.get("cwd") or "")
+        return str(agent), str(session["value"])
+    return str(agent), str(pane.get("foreground_cwd") or pane.get("cwd") or "")
 
 
-def is_our_pane(pane: dict) -> bool:
-    titles = {pane.get("label"), pane.get("title"), pane.get("terminal_title_stripped")}
-    return PANE_TITLE in titles and not pane.get("agent")
+# --- our own panes ------------------------------------------------------------------
+# A tree pane records itself (its pane id and pid) while it runs, so the toggle key
+# recognises it by identity rather than by a title another pane could share.
+
+def _marks_dir() -> Path:
+    base = os.environ.get("HERDR_PLUGIN_STATE_DIR") or tempfile.gettempdir()
+    return Path(base) / "agents-tree-panes"
+
+
+def _mark_path(pane_id: str) -> Path:
+    return _marks_dir() / re.sub(r"[^A-Za-z0-9_.-]", "_", pane_id)
+
+
+def is_our_pane(pane_id: str) -> bool:
+    try:
+        pid = int(_mark_path(pane_id).read_text())
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def open_pane(scope: str, placement: str) -> int:
-    plugin = os.environ.get("HERDR_PLUGIN_ID") or PLUGIN_ID
     focused = focused_pane_id()
-    pane = pane_info(focused) if focused else {}
-    if focused and is_our_pane(pane):
+    if focused and is_our_pane(focused):
         result = _run("plugin", "pane", "close", focused)
     else:
-        target = target_for(pane) if scope == "focused" else ""
-        result = _run("plugin", "pane", "open", "--plugin", plugin, "--entrypoint", "tree",
-                      "--placement", placement, "--env", f"{TARGET_ENV}={target}")
+        provider, target = (target_for(pane_info(focused)) if focused and scope == "focused"
+                            else (DEFAULT_PROVIDER, ""))
+        result = _run("plugin", "pane", "open", "--plugin", _plugin_id(), "--entrypoint", "tree",
+                      "--placement", placement, "--env", f"{PROVIDER_ENV}={provider}",
+                      "--env", f"{TARGET_ENV}={target}")
     if result is None:
         print("agents-tree: could not run herdr", file=sys.stderr)
         return 1
@@ -108,9 +130,14 @@ def run_pane() -> int:
 
     from agents_tree.cli import main
 
+    mark = _mark_path(os.environ["HERDR_PANE_ID"]) if os.environ.get("HERDR_PANE_ID") else None
+    if mark:
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        mark.write_text(str(os.getpid()))
     target = os.environ.get(TARGET_ENV, "")
+    args = ["-w", "--provider", os.environ.get(PROVIDER_ENV) or DEFAULT_PROVIDER]
     try:
-        return main(["-w", *(["--", target] if target else [])])
+        return main([*args, *(["--", target] if target else [])])
     except KeyboardInterrupt:
         return 0
     except BaseException as e:  # noqa: BLE001 - anything, including SystemExit from argparse
@@ -122,6 +149,9 @@ def run_pane() -> int:
         except (EOFError, KeyboardInterrupt):
             pass
         return 1
+    finally:
+        if mark:
+            mark.unlink(missing_ok=True)
 
 
 # --- key bindings -----------------------------------------------------------------
@@ -173,9 +203,9 @@ def _config_ok() -> bool:
     return result is not None and result.returncode == 0
 
 
-def _notify(title: str, body: str) -> None:
+def _notify(body: str) -> None:
     print(body)
-    _run("notification", "show", title, "--body", body, "--sound", "none")
+    _run("notification", "show", "agents-tree", "--body", body, "--sound", "none")
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -191,64 +221,62 @@ def _is_bound(config: str, key: str) -> bool:
     return re.search(pattern, config, re.M | re.I) is not None
 
 
-def _rewrite_config(path: Path, original: str, new: str) -> str | None:
-    """Back up, write, check; restore on failure. Returns an error, or None."""
+def _edit_config(build: Callable[[str, str], str]) -> int:
+    """Rewrite the herdr config through build(original, without_our_block), which
+    returns the new text or raises ValueError with the reason to change nothing.
+    Backs up, checks the result with `herdr config check`, restores on failure."""
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original = path.read_text() if path.exists() else ""
+    try:
+        if original and not _config_ok():
+            raise ValueError("it does not pass `herdr config check`")
+        new = build(original, strip_block(original))
+    except ValueError as e:
+        _notify(f"{path}: {e}; nothing changed.")
+        return 1
     if path.exists():
         shutil.copy2(path, path.with_name(path.name + ".agents-tree-backup"))
     _write_atomic(path, new)
     if not _config_ok():
         _write_atomic(path, original)
-        return "the changed config failed `herdr config check`; restored it"
+        _notify(f"{path}: the changed config failed `herdr config check`; restored it.")
+        return 1
     _run("server", "reload-config")
-    return None
+    return 0
 
 
 def setup_keys() -> int:
-    plugin = os.environ.get("HERDR_PLUGIN_ID") or PLUGIN_ID
-    path = config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    original = path.read_text() if path.exists() else ""
-    if original and not _config_ok():
-        _notify("agents-tree", f"{path} does not pass `herdr config check`; nothing changed.")
+    taken: list[str] = []
+    free: list[tuple[str, str, str]] = []
+
+    def build(original: str, rest: str) -> str:
+        taken.extend(k for k, _, _ in KEYS if _is_bound(rest, k))
+        free.extend(k for k in KEYS if k[0] not in taken)
+        if not free:
+            raise ValueError(f"{', '.join(taken)} already bound")
+        return (rest + "\n\n" if rest else "") + key_block(_plugin_id(), free) + "\n"
+
+    if _edit_config(build):
         return 1
-    try:
-        rest = strip_block(original)
-    except ValueError as e:
-        _notify("agents-tree", f"{path}: {e}; nothing changed.")
-        return 1
-    taken = [k for k, _, _ in KEYS if _is_bound(rest, k)]
-    free = [k for k in KEYS if k[0] not in taken]
-    if not free:
-        _notify("agents-tree", f"{', '.join(taken)} already bound in {path}; nothing changed.")
-        return 1
-    error = _rewrite_config(path, original,
-                            (rest + "\n\n" if rest else "") + key_block(plugin, free) + "\n")
-    if error:
-        _notify("agents-tree", f"{path}: {error}.")
-        return 1
-    msg = f"Bound {', '.join(k for k, _, _ in free)} in {path}."
+    msg = f"Bound {', '.join(k for k, _, _ in free)} in {config_path()}."
     if taken:
         msg += f" Left {', '.join(taken)} alone: already bound."
-    _notify("agents-tree", msg)
+    _notify(msg)
     return 0
 
 
 def remove_keys() -> int:
-    path = config_path()
-    original = path.read_text() if path.exists() else ""
+    def build(original: str, rest: str) -> str:
+        return rest + "\n" if rest else ""
+
+    original = config_path().read_text() if config_path().exists() else ""
     if BEGIN not in original and END not in original:
-        _notify("agents-tree", f"No agents-tree keys in {path}.")
+        _notify(f"No agents-tree keys in {config_path()}.")
         return 0
-    try:
-        rest = strip_block(original)
-    except ValueError as e:
-        _notify("agents-tree", f"{path}: {e}; nothing changed.")
+    if _edit_config(build):
         return 1
-    error = _rewrite_config(path, original, rest + "\n" if rest else "")
-    if error:
-        _notify("agents-tree", f"{path}: {error}.")
-        return 1
-    _notify("agents-tree", f"Removed the agents-tree keys from {path}.")
+    _notify(f"Removed the agents-tree keys from {config_path()}.")
     return 0
 
 

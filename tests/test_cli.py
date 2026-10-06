@@ -1,7 +1,13 @@
+import re
+from pathlib import Path
+
 import pytest
 from conftest import assistant
 
-from agents_tree.cli import main
+import agents_tree
+from agents_tree.cli import main, parse_args
+
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def test_prints_tree_and_exits_zero(fake, capsys):
@@ -9,10 +15,10 @@ def test_prints_tree_and_exits_zero(fake, capsys):
 
     assert main(["abc123", "--color", "never"]) == 0
 
-    out = capsys.readouterr().out
-    assert out.splitlines()[0].split()[0] == "AGENT"
-    assert out.splitlines()[1].startswith("abc123  [abc123]")
-    assert "(no subagents)" in out
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].split()[0] == "AGENT"
+    assert out[1].startswith("abc123  [abc123]")
+    assert out[-1].strip() == "(no subagents)"
 
 
 def test_nothing_found_prints_reason_and_exits_one(fake, capsys):
@@ -21,7 +27,7 @@ def test_nothing_found_prints_reason_and_exits_one(fake, capsys):
     assert capsys.readouterr().out.strip() == "no running Claude Code sessions"
 
 
-def test_window_option_reaches_the_renderer(fake, capsys):
+def test_window_option_reaches_every_agent(fake, capsys):
     fake.session("abc123", "/w/a", [assistant(0, context=100_000)])
 
     main(["abc123", "--color", "never", "--window", "200000"])
@@ -29,19 +35,22 @@ def test_window_option_reaches_the_renderer(fake, capsys):
     assert "50 % of 200k" in capsys.readouterr().out
 
 
-def test_watch_flag_does_not_swallow_the_target():
-    from agents_tree.cli import parse_args
+def test_transcript_text_is_sanitised_before_printing(fake, capsys):
+    fake.session("abc123", "/w/a", [{"type": "ai-title", "aiTitle": "evil\x1b[2Jtitle"},
+                                    assistant(0)])
 
+    main(["abc123", "--color", "never"])
+
+    assert "\x1b" not in capsys.readouterr().out
+
+
+def test_watch_flag_does_not_swallow_the_target():
     args = parse_args(["-w", "."])
 
     assert (args.watch, args.target, args.interval) == (True, ".", 2.0)
 
 
 def test_interval_must_be_positive(capsys):
-    import pytest
-
-    from agents_tree.cli import parse_args
-
     with pytest.raises(SystemExit):
         parse_args(["-w", "-n", "0"])
     assert "--interval must be positive" in capsys.readouterr().err
@@ -49,8 +58,14 @@ def test_interval_must_be_positive(capsys):
 
 @pytest.mark.parametrize("value", ["", "200k", "-5"])
 def test_bad_window_env_is_ignored(monkeypatch, value):
-    from agents_tree.cli import parse_args
-
     monkeypatch.setenv("AGENTS_TREE_WINDOW", value)
 
     assert parse_args([]).window is None
+
+
+def test_version_is_the_same_everywhere():
+    def version(name):
+        found = re.search(r'^version = "([^"]+)"', (ROOT / name).read_text(), re.M)
+        return found and found.group(1)
+
+    assert version("pyproject.toml") == agents_tree.__version__ == version("herdr-plugin.toml")
