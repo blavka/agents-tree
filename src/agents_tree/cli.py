@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import os
-import re
-import select
-import shutil
 import signal
 import sys
-import time
 
-from agents_tree import __version__
+from agents_tree import __version__, live
 from agents_tree.providers import PROVIDERS
 from agents_tree.render import render
 
@@ -24,7 +19,8 @@ targets:
   DIR           sessions running in DIR ("." works); if none, DIR's newest session
   SESSION-ID    one session (a unique prefix is enough)
 
-live view keys: q quit, r toggle running-only
+live view keys: ↑/↓ or j/k select, enter or a click shows the agent's detail,
+  esc goes back, r toggles running-only, q quits
 
 Reads local transcripts only. Run it in its own terminal (or the herdr plugin):
 started with `!` inside an agent, its output lands in that agent's context.
@@ -65,6 +61,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                     help="context window for the %% column (default: per model)")
     ap.add_argument("--provider", choices=sorted(PROVIDERS), default="claude")
     ap.add_argument("--color", choices=["auto", "always", "never"], default="auto")
+    ap.add_argument("--no-mouse", dest="mouse", action="store_false",
+                    help="live view: leave the mouse to the terminal (text selection)")
     ap.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     args = ap.parse_args(argv)
     if args.interval <= 0:
@@ -82,96 +80,6 @@ def frame(args: argparse.Namespace, running_only: bool, color: bool,
                   width=width, max_lines=max_lines), True
 
 
-@contextlib.contextmanager
-def _screen(keys: bool):
-    """Alternate screen, no cursor, no autowrap; cbreak stdin when reading keys."""
-    import termios
-    import tty
-
-    saved = None
-    if keys:
-        saved = termios.tcgetattr(sys.stdin.fileno())
-        tty.setcbreak(sys.stdin.fileno())
-    sys.stdout.write("\033[?1049h\033[?25l\033[?7l")
-    sys.stdout.flush()
-    try:
-        yield
-    finally:
-        sys.stdout.write("\033[?7h\033[?25h\033[?1049l")
-        sys.stdout.flush()
-        if saved is not None:
-            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, saved)
-
-
-# Escape sequences (arrow keys, and the wheel scrolling the alternate screen sends as
-# arrows) must not read as a lone Esc.
-_ESCAPE_SEQ_RE = re.compile(r"\x1b(\[[0-9;<?]*[ -/]*[@-~]|O.)")
-
-
-def parse_keys(data: str) -> set[str]:
-    """Keys in one read: "quit" and/or "toggle"; escape sequences are dropped."""
-    rest = _ESCAPE_SEQ_RE.sub("", data)
-    keys = set()
-    if any(ch in rest for ch in "qQ\x03") or rest == "\x1b":
-        keys.add("quit")
-    if "r" in rest or "R" in rest:
-        keys.add("toggle")
-    return keys
-
-
-class _Redraw(Exception):
-    """The terminal was resized: draw again now rather than at the next tick."""
-
-
-def _on_resize(signum, frame):
-    raise _Redraw
-
-
-def _on_term(signum, frame):
-    raise SystemExit(0)
-
-
-def _read_key(timeout: float, keys: bool) -> str | None:
-    if not keys:
-        time.sleep(timeout)
-        return None
-    ready, _, _ = select.select([sys.stdin], [], [], timeout)
-    return os.read(sys.stdin.fileno(), 32).decode(errors="ignore") if ready else None
-
-
-def watch(args: argparse.Namespace, color: bool) -> None:
-    keys = sys.stdin.isatty()
-    running_only = args.running
-    signal.signal(signal.SIGTERM, _on_term)
-    signal.signal(signal.SIGHUP, _on_term)
-    signal.signal(signal.SIGWINCH, _on_resize)
-    with _screen(keys):
-        while True:
-            try:
-                cols, rows = shutil.get_terminal_size()
-                room = max(rows - 2, 1)
-                body, _ = frame(args, running_only, color, width=cols, max_lines=room)
-                lines = body.split("\n")
-                if len(lines) > room:  # running agents alone do not fit
-                    more = f"… {len(lines) - room + 1} more lines (enlarge the terminal)"
-                    lines = lines[: room - 1] + [f"\033[90m{more}\033[0m" if color else more]
-                footer = (f"agents-tree · every {args.interval:g}s · "
-                          f"r {'all' if running_only else 'running only'} · q quit · "
-                          + time.strftime("%H:%M:%S"))
-                footer = f"\033[90m{footer}\033[0m" if color else footer
-                lines = lines + [""] * (room - len(lines)) + [footer] if rows > 2 else lines
-                sys.stdout.write("\033[H" + "\n".join(line + "\033[K" for line in lines)
-                                 + "\033[J")
-                sys.stdout.flush()
-                pressed = parse_keys(_read_key(args.interval, keys) or "")
-            except _Redraw:
-                continue
-            if "quit" in pressed:
-                return
-            if "toggle" in pressed:
-                running_only = not running_only
-
-
 def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     args = parse_args(argv)
@@ -182,7 +90,8 @@ def main(argv: list[str] | None = None) -> int:
         print(text)
         return 0 if ok else 1
     try:
-        watch(args, color)
+        live.run(lambda: PROVIDERS[args.provider].sessions(args.target), interval=args.interval,
+                 window=args.window, color=color, running_only=args.running, mouse=args.mouse)
     except KeyboardInterrupt:
         pass
     return 0

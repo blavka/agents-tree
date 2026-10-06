@@ -47,17 +47,6 @@ def test_interval_must_be_positive(capsys):
     assert "--interval must be positive" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(("data", "keys"), [
-    ("q", {"quit"}), ("\x1b", {"quit"}), ("\x03", {"quit"}), ("r", {"toggle"}),
-    ("\x1b[B", set()), ("\x1b[A\x1b[A\x1b[B", set()), ("\x1bOB", set()),
-    ("\x1b[<64;10;5M", set()), ("\x1b[Bq", {"quit"}),
-])
-def test_parse_keys(data, keys):
-    from agents_tree.cli import parse_keys
-
-    assert parse_keys(data) == keys
-
-
 @pytest.mark.parametrize("value", ["", "200k", "-5"])
 def test_bad_window_env_is_ignored(monkeypatch, value):
     from agents_tree.cli import parse_args

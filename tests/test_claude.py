@@ -302,3 +302,44 @@ def test_odd_field_types_are_ignored(fake):
     s = claude.load(path)
 
     assert (s.main.model, s.main.context_tokens) == ("opus-5-5", 3000)
+
+
+def test_detail_collects_prompt_tools_last_message_and_deduplicated_usage(fake):
+    path = fake.session("s1", "/w/app", [assistant(0, tool_uses=["tu1"])])
+    first = assistant(2, tool_uses=["b1"])
+    first["requestId"] = "req1"
+    second = assistant(2, tool_uses=["b2"])  # same response, second content block
+    second["requestId"] = "req1"
+    second["message"]["content"][0]["name"] = "Read"
+    reply = assistant(4)
+    reply["requestId"] = "req2"
+    reply["message"]["content"] = [{"type": "text", "text": "All done."}]
+    reply["message"]["usage"]["output_tokens"] = 40
+    fake.subagent(path, "a1", [
+        {"type": "user", "timestamp": "2026-10-07T06:00:01Z",
+         "message": {"role": "user", "content": "Look for the bug."}},
+        {"type": "user", "isMeta": True, "message": {"content": "<system-reminder>x"}},
+        first, second, tool_result(3, "b1"), tool_result(3, "b2"), reply,
+    ], tool_use_id="tu1")
+
+    d = claude.load(path, now=T0 + 10).agents[0].detail
+
+    assert d is not None
+    assert d.prompt == "Look for the bug."
+    assert d.tools == {"Agent": 1, "Read": 1}
+    assert (d.last_tool, d.last_tool_pending) == ("Read", False)
+    assert d.last_text == "All done."
+    assert (d.requests, d.output_tokens) == (2, 45)
+    assert d.transcript and d.transcript.endswith("agent-a1.jsonl")
+
+
+def test_main_detail_shows_the_last_user_prompt(fake):
+    path = fake.session("s1", "/w/app", [
+        {"type": "user", "message": {"content": "first ask"}},
+        assistant(1),
+        {"type": "user", "message": {"content": [{"type": "text", "text": "second ask"}]}},
+    ])
+
+    d = claude.load(path).main.detail
+
+    assert d is not None and (d.prompt_label, d.prompt) == ("Last prompt", "second ask")

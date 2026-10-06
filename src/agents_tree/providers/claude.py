@@ -23,7 +23,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from agents_tree.model import DONE, RUNNING, STALE, Agent, Session
+from agents_tree.model import DONE, RUNNING, STALE, Agent, Detail, Session
 
 NAME = "claude"
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
@@ -46,6 +46,8 @@ _USAGE_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_
                "output_tokens")
 # The Agent tool answers a background launch at once; that answer is not a result.
 _ASYNC_LAUNCH_PREFIX = "Async agent launched"
+# Long texts are kept only this far for the detail view.
+_TEXT_LIMIT = 20_000
 
 
 def context_window(model: str | None) -> int:
@@ -74,7 +76,8 @@ class Transcript:
     """What one .jsonl transcript says about its agent."""
 
     __slots__ = ("model", "effort", "context", "first", "last", "title", "custom_title",
-                 "tool_uses", "tool_results", "task_status")
+                 "tool_uses", "tool_results", "task_status", "tool_counts", "last_tool",
+                 "first_prompt", "last_prompt", "last_text", "outputs")
 
     def __init__(self) -> None:
         self.model: str | None = None
@@ -88,6 +91,13 @@ class Transcript:
         self.tool_results: set[str] = set()
         # task id -> (timestamp of the notification, status); the newest one wins.
         self.task_status: dict[str, tuple[float, str]] = {}
+        self.tool_counts: dict[str, int] = {}
+        self.last_tool: tuple[str, float | None, str] | None = None  # name, when, id
+        self.first_prompt: str | None = None
+        self.last_prompt: str | None = None
+        self.last_text: str | None = None
+        # One API response is written as several lines sharing a requestId.
+        self.outputs: dict[str, int] = {}
 
     @property
     def pending_tool(self) -> bool:
@@ -152,7 +162,17 @@ def _read_line(t: Transcript, line: str) -> None:
     if not isinstance(msg, dict):
         return
     content = msg.get("content")
+    if kind == "user" and not e.get("isMeta"):
+        prompt = _prompt_text(content)
+        if prompt:
+            t.first_prompt = t.first_prompt or prompt
+            t.last_prompt = prompt
     if kind == "assistant":
+        request = e.get("requestId")
+        out = msg.get("usage", {}).get("output_tokens") if isinstance(msg.get("usage"), dict) else 0
+        if isinstance(request, str):
+            t.outputs[request] = max(t.outputs.get(request, 0), _int(out))
+        _read_assistant_blocks(t, content, ts)
         model = msg.get("model")
         if isinstance(model, str) and model and model != "<synthetic>":
             t.model = model
@@ -172,6 +192,38 @@ def _read_line(t: Transcript, line: str) -> None:
                               if isinstance(b, dict) and b.get("type") == "tool_result"
                               and isinstance(b.get("tool_use_id"), str)
                               and not _result_text(b).startswith(_ASYNC_LAUNCH_PREFIX))
+
+
+def _prompt_text(content) -> str | None:
+    """A message the user (or the spawning agent) wrote; not tool results or wrappers."""
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(b["text"] for b in content if isinstance(b, dict)
+                         and b.get("type") == "text" and isinstance(b.get("text"), str))
+    else:
+        return None
+    text = text.strip()
+    if not text or text.startswith("<"):
+        return None
+    return text[:_TEXT_LIMIT]
+
+
+def _read_assistant_blocks(t: Transcript, content, ts: float | None) -> None:
+    if not isinstance(content, list):
+        return
+    texts = []
+    for b in content:
+        if not isinstance(b, dict):
+            continue
+        if b.get("type") == "text" and isinstance(b.get("text"), str) and b["text"].strip():
+            texts.append(b["text"].strip())
+        elif b.get("type") == "tool_use" and isinstance(b.get("name"), str):
+            t.tool_counts[b["name"]] = t.tool_counts.get(b["name"], 0) + 1
+            tool_id = b.get("id")
+            t.last_tool = (b["name"], ts, tool_id if isinstance(tool_id, str) else "")
+    if texts:
+        t.last_text = "\n\n".join(texts)[:_TEXT_LIMIT]
 
 
 def _result_text(block: dict) -> str:
@@ -305,14 +357,28 @@ def find(target: str | None) -> Found:
 
 # --- building the tree --------------------------------------------------------
 
-def _agent_from(aid: str, label: str, t: Transcript, status: str | None) -> Agent:
+def _agent_from(aid: str, label: str, t: Transcript, status: str | None,
+                transcript: Path | None = None) -> Agent:
     window = context_window(t.model) if t.model else None
     if window and t.context and t.context > window:
         window = 1_000_000  # a model running with the long-context window
+    main = aid == "main"
+    last = t.last_tool
+    detail = Detail(
+        prompt=t.last_prompt if main else t.first_prompt,
+        prompt_label="Last prompt" if main else "Prompt",
+        tools=dict(t.tool_counts),
+        last_tool=last[0] if last else None,
+        last_tool_at=last[1] if last else None,
+        last_tool_pending=bool(last and last[2] and last[2] not in t.tool_results),
+        last_text=t.last_text, output_tokens=sum(t.outputs.values()), requests=len(t.outputs),
+        transcript=str(transcript) if transcript else None,
+    )
     return Agent(
         id=aid, label=label, model=short_model(t.model), effort=t.effort,
         context_tokens=t.context, context_window=window,
         status=status, started=t.first, ended=None if status == RUNNING else t.last,
+        detail=detail,
     )
 
 
@@ -350,12 +416,12 @@ def load(path: Path, live: dict | None = None, now: float | None = None) -> Sess
             meta = {}
         jl = meta_path.with_name(stem + ".jsonl")
         metas.append((stem.removeprefix("agent-"), meta if isinstance(meta, dict) else {},
-                      read_transcript(jl), _mtime(jl) or None))
+                      read_transcript(jl), _mtime(jl) or None, jl))
 
     # Completion markers live in whichever transcript spawned the agent.
     notes = dict(main_t.task_status)
     tool_results = set(main_t.tool_results)
-    for _, _, t, _ in metas:
+    for _, _, t, _, _ in metas:
         for task_id, note in t.task_status.items():
             if task_id not in notes or notes[task_id][0] <= note[0]:
                 notes[task_id] = note
@@ -363,15 +429,15 @@ def load(path: Path, live: dict | None = None, now: float | None = None) -> Sess
 
     agents: dict[str, Agent] = {}
     parent_of: dict[str, str | None] = {}
-    for aid, meta, t, mtime in metas:
+    for aid, meta, t, mtime, jl in metas:
         status = _status(aid, meta, t, mtime, now, notes, tool_results, session_live)
         agent_type = str(meta.get("agentType") or "?").rsplit(":", 1)[-1]
         label = f"{agent_type}: {meta.get('description') or aid}"
-        agents[aid] = _agent_from(aid, label, t, status)
+        agents[aid] = _agent_from(aid, label, t, status, jl)
         tool_use = meta.get("toolUseId")
         parent = meta.get("parentAgentId")
         if not (isinstance(parent, str) and parent != aid):
-            parent = next((pid for pid, _, pt, _ in metas
+            parent = next((pid for pid, _, pt, _, _ in metas
                            if pid != aid and tool_use and tool_use in pt.tool_uses), None)
         parent_of[aid] = parent
 
@@ -383,7 +449,7 @@ def load(path: Path, live: dict | None = None, now: float | None = None) -> Sess
         agent.children.sort(key=lambda a: a.started or 0)
     roots.sort(key=lambda a: a.started or 0)
 
-    main = _agent_from("main", "main", main_t, live.get("status"))
+    main = _agent_from("main", "main", main_t, live.get("status"), path)
     main.ended = main_t.last  # the main loop's span is its transcript's, live or not
     title = main_t.custom_title or main_t.title or live.get("name") or path.stem[:8]
     return Session(id=path.stem, provider=NAME, title=title, main=main, agents=roots,

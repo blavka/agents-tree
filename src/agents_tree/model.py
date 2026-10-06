@@ -13,6 +13,22 @@ STALE = "stale"  # no completion marker and no activity for a while
 
 
 @dataclass
+class Detail:
+    """What the detail view shows beyond the tree row."""
+
+    prompt: str | None = None
+    prompt_label: str = "Prompt"
+    tools: dict[str, int] = field(default_factory=dict)
+    last_tool: str | None = None
+    last_tool_at: float | None = None
+    last_tool_pending: bool = False
+    last_text: str | None = None
+    output_tokens: int = 0
+    requests: int = 0
+    transcript: str | None = None
+
+
+@dataclass
 class Agent:
     id: str
     label: str
@@ -25,6 +41,7 @@ class Agent:
     # None while the agent runs: the renderer measures elapsed time up to now.
     ended: float | None = None
     children: list[Agent] = field(default_factory=list)
+    detail: Detail | None = None
 
     @property
     def running(self) -> bool:
