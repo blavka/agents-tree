@@ -1,0 +1,62 @@
+# herdr plugin: the live agents-tree view for the focused agent pane.
+# Runs the agents-tree bundled in this repository (src/), so it needs only python3 >= 3.10.
+
+id = "agents-tree"
+name = "agents-tree"
+version = "0.1.0"
+description = "Live tree of the focused agent's subagents: model, effort, context use, elapsed time, status."
+# `agent_session` on pane.get (the pane's Claude Code session id) and `plugin pane open --env`.
+min_herdr_version = "0.9.0"
+platforms = ["linux", "macos"]
+
+# Over the focused pane, restoring the layout when it closes; `q` or the same key closes it.
+# The target (session id, directory, or all sessions) comes from the action via --env.
+[[panes]]
+id = "tree"
+title = "agents-tree"
+placement = "overlay"
+command = ["bash", "herdr/run.sh", "pane"]
+
+[[actions]]
+id = "open"
+title = "agents-tree: focused agent"
+description = "Live tree of the focused agent's session over the pane (every session when the pane has no Claude agent). Press again to close."
+contexts = ["pane", "workspace"]
+command = ["bash", "herdr/run.sh", "open", "focused"]
+
+[[actions]]
+id = "open-all"
+title = "agents-tree: all sessions"
+description = "Live tree of every running Claude Code session on this machine."
+contexts = ["pane", "workspace"]
+command = ["bash", "herdr/run.sh", "open", "all"]
+
+[[actions]]
+id = "open-split"
+title = "agents-tree: focused agent (split)"
+description = "Live tree of the focused agent's session in a split beside it."
+contexts = ["pane", "workspace"]
+command = ["bash", "herdr/run.sh", "open", "focused", "split"]
+
+[[actions]]
+id = "open-tab"
+title = "agents-tree: focused agent (tab)"
+description = "Live tree of the focused agent's session in its own tab."
+contexts = ["pane", "workspace"]
+command = ["bash", "herdr/run.sh", "open", "focused", "tab"]
+
+# herdr binds keys only from the user's config, so these actions write (and remove)
+# one marked block there: prefix+a and prefix+shift+a, backed up first.
+[[actions]]
+id = "setup-keys"
+title = "agents-tree: install key bindings"
+description = "Bind prefix+a (focused agent) and prefix+shift+a (all sessions) in your herdr config."
+contexts = ["workspace"]
+command = ["bash", "herdr/run.sh", "keys", "setup"]
+
+[[actions]]
+id = "remove-keys"
+title = "agents-tree: remove key bindings"
+description = "Remove the block setup-keys wrote."
+contexts = ["workspace"]
+command = ["bash", "herdr/run.sh", "keys", "remove"]
