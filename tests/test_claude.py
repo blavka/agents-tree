@@ -246,7 +246,7 @@ def test_context_window_by_model(model, window):
 def test_live_sessions_are_reused_for_a_few_seconds(monkeypatch):
     calls = []
     monkeypatch.setattr(claude, "_query_live", lambda: calls.append(1) or [])
-    monkeypatch.setattr(claude, "_live_cache", None)
+    monkeypatch.setattr(claude, "_live", claude._LiveCache())
 
     claude.live_sessions()
     claude.live_sessions()
@@ -312,7 +312,8 @@ def test_agent_waiting_on_a_long_tool_call_stays_running(fake):
 
 
 def test_async_launch_answer_does_not_finish_an_old_style_agent(fake):
-    launched = tool_result(2, "tu1", [{"type": "text", "text": "Async agent launched successfully."}])
+    launched = tool_result(2, "tu1",
+                           [{"type": "text", "text": "Async agent launched successfully."}])
     path = _two_agent_session(fake, [launched], mtime=T0, requestShape=None)
 
     assert claude.load(path, now=T0 + 1000).agents[0].state == STALE

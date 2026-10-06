@@ -274,23 +274,26 @@ def _live_row(r: dict, status) -> dict:
             "status": status, "name": r.get("name")}
 
 
-_live_cache: tuple[float, list[dict]] | None = None
+@dataclass(slots=True)
+class _LiveCache:
+    at: float = float("-inf")
+    rows: list[dict] = field(default_factory=list)
+
+
+_live = _LiveCache()
 
 
 def live_sessions() -> list[dict]:
     """Running sessions as [{sessionId, cwd, kind, status, name}]."""
-    global _live_cache
-    if _live_cache and time.monotonic() - _live_cache[0] < LIVE_TTL_SECS:
-        return _live_cache[1]
-    rows = _query_live()
-    _live_cache = (time.monotonic(), rows)
-    return rows
+    if time.monotonic() - _live.at >= LIVE_TTL_SECS:
+        _live.rows, _live.at = _query_live(), time.monotonic()
+    return _live.rows
 
 
 def _query_live() -> list[dict]:
     try:
         out = subprocess.run(["claude", "agents", "--json"], capture_output=True,
-                             text=True, timeout=10).stdout
+                             text=True, timeout=10, check=False).stdout
         rows = json.loads(out)
         if isinstance(rows, list):
             return [_live_row(r, r.get("state") or r.get("status")) for r in rows
@@ -300,7 +303,7 @@ def _query_live() -> list[dict]:
     rows = []
     for f in (CLAUDE_DIR / "sessions").glob("*.json"):
         try:
-            r = json.loads(f.read_text())
+            r = json.loads(f.read_text(encoding="utf-8"))
             pid = int(r["pid"])
             if pid <= 0 or not isinstance(r["sessionId"], str):
                 continue
@@ -354,9 +357,9 @@ def _same_dir(a: str | None, resolved: Path) -> bool:
 Found = list[tuple[Path, "dict | None", "str | None"]]
 
 
-def _live_found(sessions: list[dict]) -> Found:
+def _live_found(live: list[dict]) -> Found:
     found: Found = []
-    for s in sessions:
+    for s in live:
         try:
             path = transcript_path(s["sessionId"], s.get("cwd"))
         except LookupError:

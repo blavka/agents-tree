@@ -16,7 +16,9 @@ import select
 import shutil
 import signal
 import sys
+import termios
 import threading
+import tty
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -214,9 +216,6 @@ def _on_term(signum, frame):
 @contextlib.contextmanager
 def _screen(keys: bool, mouse: bool):
     """Alternate screen, no cursor, no autowrap, optional mouse; cbreak stdin for keys."""
-    import termios
-    import tty
-
     saved = None
     if keys:
         saved = termios.tcgetattr(sys.stdin.fileno())

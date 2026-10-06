@@ -40,17 +40,21 @@ if sys.argv[1:3] == ["config", "check"]:
             panes.write_text(json.dumps(mapping))
 
         def focus(self, pane_id):
-            monkeypatch.setenv("HERDR_PLUGIN_CONTEXT_JSON", json.dumps({"focused_pane_id": pane_id}))
+            context = json.dumps({"focused_pane_id": pane_id})
+            monkeypatch.setenv("HERDR_PLUGIN_CONTEXT_JSON", context)
 
         def calls(self):
-            return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+            if not log.exists():
+                return []
+            return [json.loads(line) for line in log.read_text().splitlines()]
 
     return Fake()
 
 
 @pytest.mark.parametrize(("pane", "target"), [
     (CLAUDE_PANE, ("claude", "sess-1")),
-    ({"agent": "claude", "cwd": "/w/app", "foreground_cwd": "/w/app/sub"}, ("claude", "/w/app/sub")),
+    ({"agent": "claude", "cwd": "/w/app", "foreground_cwd": "/w/app/sub"},
+     ("claude", "/w/app/sub")),
     ({"agent": "claude", "cwd": "/w/app"}, ("claude", "/w/app")),
     ({"agent": "codex", "agent_session": {"agent": "codex", "kind": "id", "value": "x"}},
      ("claude", "")),

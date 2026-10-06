@@ -22,9 +22,11 @@ import shutil
 import stat
 import subprocess
 import sys
+import traceback
 from collections.abc import Callable
 from pathlib import Path
 
+from agents_tree import cli
 from agents_tree.providers import PROVIDERS
 
 TARGET_ENV = "AGENTS_TREE_TARGET"
@@ -44,7 +46,8 @@ def _plugin_id() -> str:
 
 def _run(*args: str) -> subprocess.CompletedProcess | None:
     try:
-        return subprocess.run([_herdr(), *args], capture_output=True, text=True, timeout=10)
+        return subprocess.run([_herdr(), *args], capture_output=True, text=True, timeout=10,
+                              check=False)
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -112,7 +115,7 @@ def _mark_path(pane_id: str) -> Path:
 
 def is_our_pane(pane_id: str) -> bool:
     try:
-        pid = int(_mark_path(pane_id).read_text())
+        pid = int(_mark_path(pane_id).read_text(encoding="utf-8"))
         os.kill(pid, 0)
     except (OSError, ValueError):
         return False
@@ -139,10 +142,6 @@ def open_pane(scope: str, placement: str) -> int:
 
 def run_pane() -> int:
     """The pane's terminal is the only place an error is seen: hold it until enter."""
-    import traceback
-
-    from agents_tree.cli import main
-
     mark = _mark_path(os.environ["HERDR_PANE_ID"]) if os.environ.get("HERDR_PANE_ID") else None
     if mark:
         try:
@@ -155,21 +154,28 @@ def run_pane() -> int:
     target = os.environ.get(TARGET_ENV, "")
     args = ["-w", "--provider", os.environ.get(PROVIDER_ENV) or DEFAULT_PROVIDER]
     try:
-        return main([*args, *(["--", target] if target else [])])
+        return cli.main([*args, *(["--", target] if target else [])])
     except KeyboardInterrupt:
         return 0
-    except BaseException as e:  # noqa: BLE001 - anything, including SystemExit from argparse
-        if isinstance(e, SystemExit) and not e.code:
+    except SystemExit as e:  # argparse rejecting the target
+        if not e.code:
             return 0
-        traceback.print_exc()
-        try:
-            input("\n  press enter to close ")
-        except (EOFError, KeyboardInterrupt):
-            pass
+        _hold_error()
+        return 1
+    except Exception:  # pylint: disable=broad-exception-caught  # shown, not lost
+        _hold_error()
         return 1
     finally:
         if mark:
             mark.unlink(missing_ok=True)
+
+
+def _hold_error() -> None:
+    traceback.print_exc()
+    try:
+        input("\n  press enter to close ")
+    except (EOFError, KeyboardInterrupt):
+        pass
 
 
 # --- key bindings -----------------------------------------------------------------
@@ -228,7 +234,7 @@ def _notify(body: str) -> None:
 
 def _write_atomic(path: Path, text: str) -> None:
     tmp = path.with_name(f".{path.name}.agents-tree-tmp")
-    tmp.write_text(text)
+    tmp.write_text(text, encoding="utf-8")
     if path.exists():
         shutil.copymode(path, tmp)
     os.replace(tmp, path)
@@ -239,17 +245,17 @@ def _is_bound(config: str, key: str) -> bool:
     return re.search(pattern, config, re.M | re.I) is not None
 
 
-def _edit_config(build: Callable[[str, str], str]) -> int:
-    """Rewrite the herdr config through build(original, without_our_block), which
+def _edit_config(build: Callable[[str], str]) -> int:
+    """Rewrite the herdr config through build(config_without_our_block), which
     returns the new text or raises ValueError with the reason to change nothing.
     Backs up, checks the result with `herdr config check`, restores on failure."""
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    original = path.read_text() if path.exists() else ""
+    original = path.read_text(encoding="utf-8") if path.exists() else ""
     try:
         if original and not _config_ok():
             raise ValueError("it does not pass `herdr config check`")
-        new = build(original, strip_block(original))
+        new = build(strip_block(original))
     except ValueError as e:
         _notify(f"{path}: {e}; nothing changed.")
         return 1
@@ -268,7 +274,7 @@ def setup_keys() -> int:
     taken: list[str] = []
     free: list[tuple[str, str, str]] = []
 
-    def build(original: str, rest: str) -> str:
+    def build(rest: str) -> str:
         taken.extend(k for k, _, _ in KEYS if _is_bound(rest, k))
         free.extend(k for k in KEYS if k[0] not in taken)
         if not free:
@@ -285,10 +291,11 @@ def setup_keys() -> int:
 
 
 def remove_keys() -> int:
-    def build(original: str, rest: str) -> str:
+    def build(rest: str) -> str:
         return rest + "\n" if rest else ""
 
-    original = config_path().read_text() if config_path().exists() else ""
+    path = config_path()
+    original = path.read_text(encoding="utf-8") if path.exists() else ""
     if BEGIN not in original and END not in original:
         _notify(f"No agents-tree keys in {config_path()}.")
         return 0
