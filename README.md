@@ -119,6 +119,11 @@ CI (`.github/workflows/test.yaml`) runs the same on every push and pull request:
 lint and types on Python 3.12, then the tests, a test run and a package build on
 3.10 to 3.14.
 
+To release, bump `version` in `pyproject.toml`, `src/agents_tree/__init__.py` and
+`herdr-plugin.toml`, then push a matching tag (`git tag v0.2.0 && git push origin
+v0.2.0`). `.github/workflows/publish.yaml` checks the tag against the version,
+tests, builds and publishes to PyPI through trusted publishing.
+
 Providers live in `src/agents_tree/providers/`: each turns one agent CLI's files
 into the provider-neutral `Session`/`Agent` model in `model.py`, which
 `render.py` draws.
