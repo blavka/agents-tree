@@ -10,7 +10,7 @@ from collections.abc import Callable
 
 from agents_tree import __version__, live
 from agents_tree.model import Session, override_window, sanitize
-from agents_tree.providers import PROVIDERS
+from agents_tree.providers import ALL, PROVIDERS
 from agents_tree.render import render, style
 
 DESCRIPTION = "Show coding-agent sessions and their subagents as a tree: " \
@@ -61,7 +61,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                     help="only running subagents (and their parents)")
     ap.add_argument("--window", type=_positive_int, metavar="TOKENS", default=_env_window(),
                     help="context window for the %% column (default: per model)")
-    ap.add_argument("--provider", choices=sorted(PROVIDERS), default="claude")
+    ap.add_argument("--provider", choices=[ALL, *sorted(PROVIDERS)], default=ALL,
+                    help="which agent CLI to read (default: all of them)")
     ap.add_argument("--color", choices=["auto", "always", "never"], default="auto")
     ap.add_argument("--no-mouse", dest="mouse", action="store_false",
                     help="live view: leave the mouse to the terminal (text selection)")
@@ -75,12 +76,29 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 def loader(args: argparse.Namespace) -> Callable[[], list[Session]]:
     """Sessions as the views get them: sanitised once, with --window applied."""
     def load() -> list[Session]:
-        sessions = PROVIDERS[args.provider].sessions(args.target)
+        sessions = _sessions(args.provider, args.target)
         sanitize(sessions)
         override_window(sessions, args.window)
         return sessions
 
     return load
+
+
+def _sessions(provider: str, target: str | None) -> list[Session]:
+    """One provider's sessions, or with ALL every provider's: those that find
+    nothing are skipped, and only when none finds anything is it an error."""
+    if provider != ALL:
+        return PROVIDERS[provider].sessions(target)
+    found: list[Session] = []
+    misses = []
+    for p in PROVIDERS.values():
+        try:
+            found += p.sessions(target)
+        except LookupError as e:
+            misses.append(str(e))
+    if not found:
+        raise LookupError("; ".join(misses))
+    return found
 
 
 def main(argv: list[str] | None = None) -> int:

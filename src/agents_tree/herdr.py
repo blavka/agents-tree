@@ -27,12 +27,12 @@ from collections.abc import Callable
 from pathlib import Path
 
 from agents_tree import cli
-from agents_tree.providers import PROVIDERS
+from agents_tree.providers import ALL, PROVIDERS
 
 TARGET_ENV = "AGENTS_TREE_TARGET"
 PROVIDER_ENV = "AGENTS_TREE_PROVIDER"
 PLUGIN_ID = "agents-tree"
-DEFAULT_PROVIDER = "claude"
+DEFAULT_PROVIDER = ALL
 PLACEMENTS = ("overlay", "split", "tab", "zoomed")
 
 
@@ -75,7 +75,7 @@ def pane_info(pane_id: str) -> dict:
 
 def target_for(pane: dict) -> tuple[str, str]:
     """(provider, target) for a pane: its session id or directory when agents-tree
-    reads its agent; every running session of the default provider otherwise."""
+    reads its agent; every running session of every provider otherwise."""
     session = pane.get("agent_session")
     if not isinstance(session, dict):
         session = {}
