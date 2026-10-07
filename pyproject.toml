@@ -61,4 +61,6 @@ disable = [
     "too-many-branches",
     "too-many-return-statements",
     "too-few-public-methods",
+    # Providers intentionally share find/cache/transcript shapes; judged in review.
+    "duplicate-code",
 ]
