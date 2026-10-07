@@ -3,7 +3,7 @@
 
 id = "agents-tree"
 name = "agents-tree"
-version = "0.1.0"
+version = "0.1.1"
 description = "Live tree of the focused agent's subagents: model, effort, context use, elapsed time, status."
 # `agent_session` on pane.get (the pane's Claude Code session id) and `plugin pane open --env`.
 min_herdr_version = "0.9.0"

@@ -1,6 +1,6 @@
 [project]
 name = "agents-tree"
-version = "0.1.0"
+version = "0.1.1"
 description = "Show Claude Code sessions and their subagents as a live tree: model, effort, context use, elapsed time, status."
 readme = "README.md"
 license = "MIT"
