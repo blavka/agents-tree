@@ -8,12 +8,16 @@
 set -euo pipefail
 
 dir="${1:-/tmp/agents-tree-demo}"
-if [ -e "$dir" ]; then
-  echo "$dir already exists; remove it first (see docs/demo/README.md, Clean up)" >&2
+# One atomic mkdir, private to this user: it fails if anything (a directory, a
+# symlink) is already there, so nobody else on a shared /tmp can slip a planted
+# directory under the code this script writes and the agents later run.
+if ! mkdir -m 700 "$dir"; then
+  echo "could not create $dir; if it is left from an earlier demo, remove it first" \
+       "(see docs/demo/README.md, Clean up)" >&2
   exit 1
 fi
-mkdir -p "$dir/bookshop" "$dir/tests"
 cd "$dir"
+mkdir bookshop tests
 
 cat > README.md <<'EOF'
 # Acme Bookshop
