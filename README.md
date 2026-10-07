@@ -5,16 +5,7 @@ Code session and the subagents it spawned as a tree, with each agent's model and
 effort, how full its context window is, how long it has been running, and its
 status.
 
-```
-Split protocol modules  [75d94683]  /home/me/src/core  background
-main                                            opus-5-5 (xhigh)        742k  74 % of 1M     42h00m  working
-├─ Explore: Study dskit modules and services    opus-5-5 (high)          53k   5 % of 1M      2m46s  completed
-└─ qp-builder: Builder: query list parsing fix  opus-5-5 (xhigh)        505k  50 % of 1M     20h16m  running
-
-Review flaky test  [b443f8f0]  /home/me/src/api  interactive
-main                                            opus-5-5 (high)         228k  23 % of 1M     41m19s  busy
-└─ claude-code-guide: Look up hook events       haiku-4-5                61k  31 % of 200k    2m34s  completed
-```
+![agents-tree run in a demo project: a session and its five subagents, one nested](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/cli.png)
 
 It reads the transcripts Claude Code keeps on disk and never talks to a session,
 so nothing it prints ends up in an agent's context. It has no dependencies
@@ -37,12 +28,15 @@ From a checkout: `uv tool install .`, or run it in place with
 agents-tree                 # every running session on this machine
 agents-tree .               # sessions running in this directory (or its newest session)
 agents-tree ~/src/api       # same, for another directory
-agents-tree b443f8f0        # one session, by id or a unique prefix (an ambiguous one lists the matches)
+agents-tree 1a2b3c4d        # one session, by id or a unique prefix (an ambiguous one lists the matches)
 agents-tree -r              # only running subagents and their parents
 agents-tree -w              # live view like top, refreshed every 2 s (-n 5 for 5 s)
 ```
 
 In the live view:
+
+![Detail of a running subagent: its prompt, tool calls and the command it waits on](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/detail.png)
+
 
 | Key | Does |
 | --- | --- |
@@ -84,6 +78,8 @@ taller than the terminal, the oldest finished agents are folded into a
 [herdr](https://herdr.dev) shows your agents, not their subagents. The plugin in
 this repository opens the live tree for the focused agent pane over that pane;
 closing it gives the layout back:
+
+![The same tree as a live overlay in herdr](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/tree.png)
 
 ```bash
 herdr integration install claude                 # herdr learns each pane's session id
