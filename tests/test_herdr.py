@@ -63,9 +63,9 @@ GROK_PANE = {"pane_id": "w1:p2", "agent": "grok", "cwd": "/w/app",
     ({"agent": "claude", "cwd": "/w/app"}, ("claude", "/w/app")),
     ({"agent": "grok", "cwd": "/w/app"}, ("grok", "/w/app")),
     ({"agent": "codex", "agent_session": {"agent": "codex", "kind": "id", "value": "x"}},
-     ("claude", "")),
-    ({"cwd": "/w/app"}, ("claude", "")),
-    ({}, ("claude", "")),
+     ("all", "")),
+    ({"cwd": "/w/app"}, ("all", "")),
+    ({}, ("all", "")),
 ])
 def test_target_for(pane, target):
     assert herdr.target_for(pane) == target
@@ -218,7 +218,7 @@ def test_pane_marks_itself_while_it_runs_and_passes_its_target(fake_herdr, monke
 
     herdr.run(["pane"])
 
-    assert seen == [(["-w", "--provider", "claude", "--", "-weird-dir"], True)]
+    assert seen == [(["-w", "--provider", "all", "--", "-weird-dir"], True)]
     assert not herdr.is_our_pane("w1:p7")
 
 
