@@ -35,9 +35,6 @@ agents-tree -w              # live view like top, refreshed every 2 s (-n 5 for 
 
 In the live view:
 
-![Detail of a running subagent: its prompt, tool calls and the command it waits on](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/detail.png)
-
-
 | Key | Does |
 | --- | --- |
 | `↑` `↓` / `j` `k` / wheel | select an agent |
@@ -51,6 +48,10 @@ The live view takes the mouse for clicks and the wheel; most terminals still
 select text with Shift held, or start it with `--no-mouse`. When the tree is
 taller than the terminal, the oldest finished agents are folded into a
 "… N older finished agents hidden" line.
+
+`Enter` on a row opens that agent's detail:
+
+![Detail of a running subagent: its prompt, tool calls and the command it waits on](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/detail.png)
 
 | Column | Meaning |
 | --- | --- |
