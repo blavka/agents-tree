@@ -4,7 +4,7 @@
 id = "agents-tree"
 name = "agents-tree"
 version = "0.1.1"
-description = "Live tree of the focused agent's subagents: model, effort, context use, elapsed time, status."
+description = "Live tree of the focused Claude Code or Grok Build agent's subagents: model, effort, context use, elapsed time, status."
 # `agent_session` on pane.get (the pane's Claude Code session id) and `plugin pane open --env`.
 min_herdr_version = "0.9.0"
 platforms = ["linux", "macos"]
@@ -20,7 +20,7 @@ command = ["bash", "herdr/run.sh", "pane"]
 [[actions]]
 id = "open"
 title = "agents-tree: focused agent"
-description = "Live tree of the focused agent's session over the pane (every session when the pane has no Claude agent). Press again to close."
+description = "Live tree of the focused agent's session over the pane (every session when the pane has no supported agent). Press again to close."
 contexts = ["pane", "workspace"]
 command = ["bash", "herdr/run.sh", "open", "focused"]
 

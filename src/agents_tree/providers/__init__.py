@@ -1,5 +1,5 @@
-"""Agent CLIs agents-tree can read. Claude Code for now; Codex and Grok later."""
+"""Agent CLIs agents-tree can read. Claude Code and Grok Build today; Codex later."""
 
-from agents_tree.providers import claude
+from agents_tree.providers import claude, grok
 
-PROVIDERS = {"claude": claude}
+PROVIDERS = {"claude": claude, "grok": grok}

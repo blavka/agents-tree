@@ -1,9 +1,9 @@
 # agents-tree
 
 See what your coding agents are doing. `agents-tree` shows every running Claude
-Code session and the subagents it spawned as a tree, with each agent's model and
-effort, how full its context window is, how long it has been running, and its
-status.
+Code or Grok Build session and the subagents it spawned as a tree, with each
+agent's model and effort, how full its context window is, how long it has been
+running, and its status.
 
 In a terminal, `agents-tree .`:
 
@@ -13,11 +13,11 @@ As a live overlay in [herdr](https://herdr.dev), one key away (`prefix+a`):
 
 ![The same tree as a live overlay in herdr](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/tree.png)
 
-It reads the transcripts Claude Code keeps on disk and never talks to a session,
-so nothing it prints ends up in an agent's context. It has no dependencies
-beyond Python 3.10.
+It reads the transcripts Claude Code and Grok Build keep on disk and never talks
+to a session, so nothing it prints ends up in an agent's context. It has no
+dependencies beyond Python 3.10.
 
-Claude Code is supported today; Codex and Grok are planned.
+Claude Code and Grok Build are supported today; Codex is planned.
 
 ## Install
 
@@ -37,6 +37,7 @@ agents-tree ~/src/api       # same, for another directory
 agents-tree 1a2b3c4d        # one session, by id or a unique prefix (an ambiguous one lists the matches)
 agents-tree -r              # only running subagents and their parents
 agents-tree -w              # live view like top, refreshed every 2 s (-n 5 for 5 s)
+agents-tree --provider grok # Grok Build sessions under ~/.grok (or $GROK_HOME)
 ```
 
 In the live view:
@@ -69,16 +70,22 @@ taller than the terminal, the oldest finished agents are folded into a
 
 ### Caveats
 
-- **Context window is inferred.** Claude Code does not record it, so it is taken
-  from the model family: 1M for Claude 5 models (Opus, Sonnet, Fable), 200k
-  otherwise. Override with `--window 200000` or `AGENTS_TREE_WINDOW`.
-- **Transcript format is internal to Claude Code** and may change between
+- **Context window.** Claude Code does not record it, so it is taken from the
+  model family: 1M for Claude 5 models (Opus, Sonnet, Fable), 200k otherwise.
+  Grok Build stores it in `summary.json` when set; otherwise 2M for grok-4 /
+  grok-code, 128k for other models. Override with `--window 200000` or
+  `AGENTS_TREE_WINDOW`.
+- **Transcript formats are internal** to each agent CLI and may change between
   releases. Unknown lines are skipped, but a field that moves makes its column
   show `-` until agents-tree is updated.
 - **Elapsed** spans wall-clock time, so a session resumed over several days, or a
   subagent woken up again by a message, shows that whole span.
-- Running sessions come from `claude agents --json`; without `claude` on `PATH`,
-  agents-tree falls back to `~/.claude/sessions/` (interactive sessions only).
+- **Running sessions (Claude)** come from `claude agents --json`; without
+  `claude` on `PATH`, agents-tree falls back to `~/.claude/sessions/`
+  (interactive sessions only).
+- **Running sessions (Grok)** are inferred from recent `updates.jsonl` activity
+  under `~/.grok/sessions` (or `$GROK_HOME/sessions`), or from a subagent whose
+  `meta.json` still says `running`.
 
 ## herdr plugin
 
