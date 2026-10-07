@@ -1,12 +1,12 @@
 [project]
 name = "agents-tree"
 version = "0.1.1"
-description = "Show Claude Code sessions and their subagents as a live tree: model, effort, context use, elapsed time, status."
+description = "Show Claude Code and Grok Build sessions and their subagents as a live tree: model, effort, context use, elapsed time, status."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Karel Blavka" }]
-keywords = ["claude-code", "subagents", "agents", "cli", "tui", "herdr"]
+keywords = ["claude-code", "grok-build", "subagents", "agents", "cli", "tui", "herdr"]
 classifiers = [
     "Environment :: Console",
     "Operating System :: POSIX",
