@@ -4,8 +4,11 @@ Layout read here (internal to Grok Build; every field is optional):
 
   ~/.grok/sessions/<url-encoded-cwd>/<session-id>/
       summary.json          title, model, effort, context_window, kind, parent
-      updates.jsonl         ACP session/update stream (conversation + tools)
-      usage.json            optional turn/session token totals
+      updates.jsonl         ACP session/update stream (conversation + tools).
+                            Each event's params._meta.totalTokens is the size of
+                            the model request in progress.
+      usage.json            optional turn/session token totals. A turn's
+                            totalTokens sums every call in that turn.
       subagents/<id>/meta.json
           {subagent_id, child_session_id, parent_session_id, subagent_type,
            description, prompt, status, started_at, completed_at, ...}
@@ -15,8 +18,10 @@ Layout read here (internal to Grok Build; every field is optional):
   meta under the child session's own subagents/ (parent_session_id = that
   child), so the tree is walked recursively into Agent.children.
 
-Running sessions: recent updates.jsonl activity, or a subagent still marked
-running. Override the home with GROK_HOME (same as Grok Build).
+Running sessions: every entry in active_sessions.json whose process is still
+alive (an open session that is only waiting stays listed), plus any session
+with recent updates.jsonl activity or a subagent still marked running.
+Override the home with GROK_HOME (same as Grok Build).
 """
 
 from __future__ import annotations
@@ -220,6 +225,24 @@ def _unwrap_update(e: dict) -> tuple[float | None, dict | None]:
     return ts, None
 
 
+def _envelope_meta(e: dict) -> dict | None:
+    """params._meta on a Grok envelope. totalTokens there is one model request."""
+    params = e.get("params")
+    if isinstance(params, dict) and isinstance(params.get("_meta"), dict):
+        return params["_meta"]
+    meta = e.get("_meta")
+    return meta if isinstance(meta, dict) else None
+
+
+def _token_total(obj: dict) -> int:
+    """Grok's own total for one bucket.
+
+    inputTokens already includes the cache read, and outputTokens the reasoning,
+    so adding those fields on top counts the same tokens twice.
+    """
+    return _int(obj.get("totalTokens") or obj.get("total_tokens"))
+
+
 def _update_kind(update: dict) -> str:
     kind = update.get("sessionUpdate") or update.get("session_update") or ""
     return kind if isinstance(kind, str) else ""
@@ -257,6 +280,16 @@ def _tool_name(update: dict) -> str:
     return "tool"
 
 
+def _note_request_total(t: Transcript, event: dict) -> None:
+    """Latest event of the latest request. A new request replaces the previous."""
+    meta = _envelope_meta(event)
+    if not meta:
+        return
+    total = _token_total(meta)
+    if total:
+        t.context = total
+
+
 def _read_line(t: Transcript, line: str) -> None:
     try:
         e = json.loads(line)
@@ -268,6 +301,7 @@ def _read_line(t: Transcript, line: str) -> None:
     if ts:
         t.first = t.first or ts
         t.last = ts
+    _note_request_total(t, e)
     if not isinstance(update, dict):
         return
     kind = _update_kind(update)
@@ -319,13 +353,16 @@ def _read_usage_update(t: Transcript, update: dict, ts: float | None) -> None:
     usage = update.get("usage")
     if not isinstance(usage, dict):
         usage = update
-    total = sum(_int(usage.get(k)) for k in (
-        "input_tokens", "inputTokens", "cache_creation_input_tokens", "cacheCreationInputTokens",
-        "cache_read_input_tokens", "cached_read_tokens", "cachedReadTokens", "cacheReadInputTokens",
-        "output_tokens", "outputTokens", "reasoning_tokens", "reasoningTokens",
-    ))
+    total = _token_total(usage)
     if not total:
-        total = _int(usage.get("total_tokens") or usage.get("totalTokens"))
+        # Older usage lines have no total. Cache and reasoning are separate there,
+        # as in the Claude transcripts, so the parts add up to one request.
+        total = sum(_int(usage.get(k)) for k in (
+            "input_tokens", "inputTokens", "cache_creation_input_tokens",
+            "cacheCreationInputTokens", "cache_read_input_tokens", "cached_read_tokens",
+            "cachedReadTokens", "cacheReadInputTokens", "output_tokens", "outputTokens",
+            "reasoning_tokens", "reasoningTokens",
+        ))
     if total:
         t.context = total
     out = _int(usage.get("output_tokens") or usage.get("outputTokens"))
@@ -346,26 +383,17 @@ def _apply_usage_file(t: Transcript, path: Path) -> None:
     session = data.get("session") if isinstance(data.get("session"), dict) else data
     if not isinstance(session, dict):
         return
-    total = sum(_int(session.get(k)) for k in (
-        "inputTokens", "input_tokens", "cachedReadTokens", "cached_read_tokens",
-        "cacheCreationTokens", "cache_creation_tokens", "outputTokens", "output_tokens",
-        "reasoningTokens", "reasoning_tokens",
-    ))
-    if not total:
-        total = _int(session.get("totalTokens") or session.get("total_tokens"))
-    if total:
-        t.context = total
-    turns = data.get("turns")
-    if isinstance(turns, list) and turns:
-        last = turns[-1]
-        if isinstance(last, dict):
-            turn_total = sum(_int(last.get(k)) for k in (
-                "inputTokens", "input_tokens", "cachedReadTokens", "cached_read_tokens",
-                "cacheCreationTokens", "cache_creation_tokens", "outputTokens", "output_tokens",
-                "reasoningTokens", "reasoning_tokens",
-            )) or _int(last.get("totalTokens") or last.get("total_tokens"))
-            if turn_total:
-                t.context = turn_total
+    # The transcript's latest request wins. This file sums every call in a turn,
+    # and it appears only once the turn ends, so it must not replace a live total.
+    if t.context is None:
+        picked = 0
+        turns = data.get("turns")
+        if isinstance(turns, list) and turns and isinstance(turns[-1], dict):
+            picked = _token_total(turns[-1])
+        if not picked:
+            picked = _token_total(session)
+        if picked:
+            t.context = picked
     model = _model_id(session.get("primaryModelId") or session.get("primary_model_id"))
     if model and not t.model:
         t.model = model
@@ -538,11 +566,51 @@ def live_sessions() -> list[dict]:
     return _live.rows
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # it exists; it just is not ours
+    except OSError:
+        return False
+    return True
+
+
+def _open_session_ids() -> set[str]:
+    """Sessions Grok still has open, from ``<GROK_HOME>/active_sessions.json``.
+
+    Same role as ``claude agents --json``: the process is alive, even when the
+    transcript has not moved for a while.
+    """
+    path = GROK_HOME / "active_sessions.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(data, list):
+        return set()
+    opened = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        sid = item.get("session_id") or item.get("sessionId")
+        if not isinstance(sid, str) or not sid or not _pid_alive(_int(item.get("pid"))):
+            continue
+        opened.add(sid)
+    return opened
+
+
 def _query_live() -> list[dict]:
     now = time.time()
+    opened = _open_session_ids()
     rows = []
     for session_dir, summary, cwd in iter_sessions():
-        status = _live_status(session_dir, summary, now)
+        status = _live_status(session_dir, summary, now,
+                              opened=summary.session_id in opened)
         if status is None:
             continue
         kind = "headless" if summary.session_kind == "headless" else "interactive"
@@ -551,21 +619,22 @@ def _query_live() -> list[dict]:
     return rows
 
 
-def _live_status(session_dir: Path, summary: Summary, now: float) -> str | None:
+def _live_status(session_dir: Path, summary: Summary, now: float, *,
+                 opened: bool = False) -> str | None:
     """None when the session does not look running; else a status word."""
     updates = session_dir / "updates.jsonl"
     recent = now - _mtime(updates) < STALE_AFTER_SECS if updates.exists() else False
     if not recent and summary.last_active_at and now - summary.last_active_at < STALE_AFTER_SECS:
         recent = True
     running_child = _any_running_subagent(session_dir)
-    if not recent and not running_child:
+    if not recent and not running_child and not opened:
         return None
-    if running_child or recent:
-        # Prefer busy when the transcript is still moving.
-        if recent and now - _mtime(updates) < 15:
-            return "busy"
-        return "idle" if not running_child else "busy"
-    return None
+    # Prefer busy when the transcript is still moving.
+    if recent and now - _mtime(updates) < 15:
+        return "busy"
+    if running_child:
+        return "busy"
+    return "idle"
 
 
 # --- building the tree --------------------------------------------------------
@@ -699,7 +768,10 @@ def _subagent_state(meta: dict, t: Transcript, mtime: float, now: float,
 
 
 def _apply_summary(t: Transcript, summary: Summary) -> None:
-    if summary.model and not t.model:
+    # current_model_id is the model the session was started with and stays put.
+    # usage.json's primaryModelId is the billing id (grok-4.7-build for grok-4.7)
+    # and only shows up when a turn ends, so it must not take over.
+    if summary.model:
         t.model = summary.model
     if summary.effort and not t.effort:
         t.effort = summary.effort
@@ -746,8 +818,6 @@ def _load_subagent(meta_path: Path, now: float, session_live: bool
     agent_type = str(meta.get("subagent_type") or "?").rsplit(":", 1)[-1]
     description = _str_field(meta, "description") or aid
     window = context_window(t.model, t.context_window)
-    if t.context and t.context > window:
-        window = max(window, t.context)
     transcript = child_updates if child_updates.exists() else meta_path
     agent = _agent_from(
         aid, f"{agent_type}: {description}", t, state, status, window, transcript,
@@ -800,15 +870,10 @@ def _tree_from(session_dir: Path, now: float, session_live: bool,
     return agents, transcripts
 
 
-def _window_for(main_t: Transcript, children: list[Transcript],
+def _window_for(main_t: Transcript, _children: list[Transcript],
                 summary: Summary) -> int:
-    window = context_window(main_t.model, main_t.context_window or summary.context_window)
-    if main_t.context and main_t.context > window:
-        window = max(window, main_t.context)
-    for t in children:
-        if t.model == main_t.model and t.context and t.context > window:
-            window = max(window, t.context)
-    return window
+    """The model's window. A token count must not become the window."""
+    return context_window(main_t.model, main_t.context_window or summary.context_window)
 
 
 def load(path: Path, live: dict | None = None, cwd: str | None = None,

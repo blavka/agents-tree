@@ -530,15 +530,70 @@ def test_usage_json_fills_context_when_updates_lack_usage(fake):
     path = fake.session("s1", "/w/app", [user_chunk(0, "hi"), agent_chunk(1, "ok")], usage={
         "sessionId": "s1",
         "session": {"inputTokens": 50, "cachedReadTokens": 900, "outputTokens": 30,
-                    "modelCalls": 2},
+                    "totalTokens": 80, "modelCalls": 2},
         "turns": [{"turnNumber": 1, "inputTokens": 50, "cachedReadTokens": 900,
-                   "outputTokens": 30}],
+                   "outputTokens": 30, "totalTokens": 80}],
     })
 
     main = grok.load(path).main
 
-    assert main.context_tokens == 980
+    # totalTokens, not input + cache + output (cache sits inside input).
+    assert main.context_tokens == 80
+    assert main.context_window == 2_000_000
     assert main.detail and main.detail.requests >= 1
+
+
+def _with_total(offset, total, prompt, session_id="s1"):
+    event = envelope(offset, {"sessionUpdate": "agent_message_chunk",
+                              "content": {"type": "text", "text": "x"}}, session_id)
+    event["params"]["_meta"] = {"totalTokens": total, "promptId": prompt}
+    return event
+
+
+def test_latest_request_total_is_not_replaced_by_the_usage_sum(fake):
+    path = fake.session("s1", "/w/app", [
+        _with_total(1, 1795, "p1"),
+        _with_total(2, 35928, "p1"),
+    ], model="grok-4.7", usage={
+        "session": {"inputTokens": 796101, "cachedReadTokens": 2640000,
+                    "outputTokens": 14653, "reasoningTokens": 11938,
+                    "totalTokens": 2158385, "modelCalls": 16,
+                    "primaryModelId": "grok-4.7-build"},
+        "turns": [{"turnNumber": 3, "inputTokens": 796101, "cachedReadTokens": 2640000,
+                   "outputTokens": 14653, "reasoningTokens": 11938,
+                   "totalTokens": 2158385, "primaryModelId": "grok-4.7-build"}],
+    })
+
+    main = grok.load(path, {"sessionId": "s1", "status": "busy"}, now=T0 + 10).main
+
+    assert main.context_tokens == 35928
+    assert main.context_window == 2_000_000
+    assert main.model == "grok-4.7"
+
+
+def test_running_subagent_keeps_live_context_and_summary_model(fake):
+    path = fake.session("s1", "/w/app", [_with_total(0, 31079, "parent")], model="grok-4.7")
+    child = fake.subagent(
+        path, "a1", description="Write cart and inventory tests", status="running",
+        model="grok-4.7", updates=[
+            _with_total(1, 2679, "child", "child-a1"),
+            _with_total(2, 29421, "child", "child-a1"),
+        ])
+    (child / "usage.json").write_text(json.dumps({
+        "session": {"primaryModelId": "grok-4.7-build", "totalTokens": 999999,
+                    "inputTokens": 900000, "cachedReadTokens": 800000,
+                    "outputTokens": 1000, "reasoningTokens": 1000, "modelCalls": 8},
+        "turns": [{"totalTokens": 999999, "inputTokens": 900000,
+                   "cachedReadTokens": 800000, "outputTokens": 1000,
+                   "reasoningTokens": 1000, "primaryModelId": "grok-4.7-build"}],
+    }))
+
+    agent = grok.load(path, {"sessionId": "s1", "status": "busy"}, now=T0 + 10).agents[0]
+
+    assert agent.state == RUNNING
+    assert agent.context_tokens == 29421
+    assert agent.context_window == 2_000_000
+    assert agent.model == "grok-4.7"
 
 
 def test_live_detection_from_recent_updates(fake):
@@ -553,6 +608,26 @@ def test_live_detection_from_recent_updates(fake):
     rows = grok.live_sessions()
 
     assert any(r["sessionId"] == "s1" for r in rows)
+
+
+def test_open_sessions_are_listed_even_when_the_transcript_is_quiet(fake):
+    old = fake.session("quiet-a", "/w/a", [agent_chunk(0, "hi")], updated_at=-1_000_000)
+    fake.session("quiet-b", "/w/b", [agent_chunk(0, "hi")], updated_at=-1_000_000)
+    fake.session("gone", "/w/c", [agent_chunk(0, "hi")], updated_at=-1_000_000)
+    (fake.home / "active_sessions.json").write_text(json.dumps([
+        {"session_id": "quiet-a", "pid": os.getpid(), "cwd": "/w/a"},
+        {"session_id": "quiet-b", "pid": os.getpid(), "cwd": "/w/b"},
+        {"session_id": "gone", "pid": 2**31 - 1, "cwd": "/w/c"},
+    ]))
+    # The quiet files must not look recent on their own.
+    for path in (old / "updates.jsonl",):
+        os.utime(path, (1, 1))
+    fake.live = None
+    grok._live = grok._LiveCache()
+
+    rows = {r["sessionId"]: r["status"] for r in grok.live_sessions()}
+
+    assert rows == {"quiet-a": "idle", "quiet-b": "idle"}
 
 
 def test_live_detection_from_running_subagent(fake):

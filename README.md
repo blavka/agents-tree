@@ -83,9 +83,10 @@ taller than the terminal, the oldest finished agents are folded into a
 - **Running sessions (Claude)** come from `claude agents --json`; without
   `claude` on `PATH`, agents-tree falls back to `~/.claude/sessions/`
   (interactive sessions only).
-- **Running sessions (Grok)** are inferred from recent `updates.jsonl` activity
-  under `~/.grok/sessions` (or `$GROK_HOME/sessions`), or from a subagent whose
-  `meta.json` still says `running`.
+- **Running sessions (Grok)** are the ones in `~/.grok/active_sessions.json`
+  (or `$GROK_HOME`) whose process is still alive, including a session that is
+  only waiting. A session also counts while its `updates.jsonl` was written in
+  the last two minutes, or while a subagent's `meta.json` still says `running`.
 
 ## herdr plugin
 
