@@ -24,7 +24,7 @@ of the picture:
 
 ```bash
 cd /tmp/agents-tree-demo && herdr --session demo     # optional
-claude --permission-mode acceptEdits                  # or: codex, grok, ...
+claude --permission-mode acceptEdits                  # or: codex --approve-for-me, grok, ...
 ```
 
 Give the session a readable name if the CLI can (Claude Code: `/rename Acme
@@ -42,6 +42,7 @@ also deliver it: find the session with `ListAgents` and send the task with
 ```bash
 agents-tree -w /tmp/agents-tree-demo                      # Claude Code
 agents-tree -w --provider <name> /tmp/agents-tree-demo     # another provider
+agents-tree -w --provider codex /tmp/agents-tree-demo      # Codex
 ```
 
 In herdr, `prefix+a` on the agent's pane opens the same view. What to check
@@ -73,4 +74,6 @@ rm -rf ~/.claude/projects/-tmp-agents-tree-demo            # Claude Code's trans
 ```
 
 Other CLIs keep their own session files for the run (Codex, for one, under
-`~/.codex/sessions/`); delete the demo's ones too.
+`~/.codex/sessions/`). Remove only the files whose `session_meta.cwd` is the
+demo directory, or archive the demo session with Codex; do not remove the whole
+sessions directory.

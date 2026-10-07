@@ -2,7 +2,7 @@
 
 agents-tree shows coding-agent sessions and their subagents as a tree. It reads
 the files an agent CLI keeps on disk; it never talks to a running session. Claude
-Code is supported; Codex and Grok are next. Read this before changing code.
+Code, Codex and Grok Build are supported. Read this before changing code.
 
 ## Layout
 

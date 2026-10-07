@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from agents_tree.model import DONE, RUNNING, WAITING, Agent, Session
-from agents_tree.providers import claude, grok
+from agents_tree.providers import claude, codex, grok
 
 T0 = datetime(2026, 10, 7, 6, 0, 0, tzinfo=timezone.utc).timestamp()
 NOW = 10_000.0
@@ -100,6 +100,7 @@ def fake(tmp_path, monkeypatch):
     # With --provider all the CLI asks every provider: keep the others off the real disk.
     monkeypatch.setattr(grok, "SESSIONS", tmp_path / "grok-sessions")
     monkeypatch.setattr(grok, "live_sessions", lambda: [])
+    monkeypatch.setattr(codex, "SESSIONS", tmp_path / "codex-sessions")
     claude._cache.clear()
     claude._used.clear()
     return f

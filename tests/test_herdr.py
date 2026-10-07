@@ -63,7 +63,7 @@ GROK_PANE = {"pane_id": "w1:p2", "agent": "grok", "cwd": "/w/app",
     ({"agent": "claude", "cwd": "/w/app"}, ("claude", "/w/app")),
     ({"agent": "grok", "cwd": "/w/app"}, ("grok", "/w/app")),
     ({"agent": "codex", "agent_session": {"agent": "codex", "kind": "id", "value": "x"}},
-     ("all", "")),
+     ("codex", "x")),
     ({"cwd": "/w/app"}, ("all", "")),
     ({}, ("all", "")),
 ])

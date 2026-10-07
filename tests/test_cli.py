@@ -27,7 +27,8 @@ def test_nothing_found_prints_reason_and_exits_one(fake, capsys):
     assert main(["--color", "never"]) == 1
 
     assert capsys.readouterr().out.strip() == (
-        "no running Claude Code sessions; no running Grok Build sessions")
+        "no running Claude Code sessions; no running Codex sessions; "
+        "no running Grok Build sessions")
 
 
 def test_window_option_reaches_every_agent(fake, capsys):

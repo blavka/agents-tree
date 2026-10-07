@@ -1,7 +1,7 @@
 # agents-tree
 
 See what your coding agents are doing. `agents-tree` shows every running Claude
-Code or Grok Build session and the subagents it spawned as a tree, with each
+Code, Codex or Grok Build session and the subagents it spawned as a tree, with each
 agent's model and effort, how full its context window is, how long it has been
 running, and its status.
 
@@ -13,11 +13,11 @@ As a live overlay in [herdr](https://herdr.dev), one key away (`prefix+a`):
 
 ![The same tree as a live overlay in herdr](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/tree.png)
 
-It reads the transcripts Claude Code and Grok Build keep on disk and never talks
+It reads the transcripts Claude Code, Codex and Grok Build keep on disk and never talks
 to a session, so nothing it prints ends up in an agent's context. It has no
 dependencies beyond Python 3.10.
 
-Claude Code and Grok Build are supported today; Codex is planned.
+Claude Code, Codex and Grok Build are supported.
 
 ## Install
 
@@ -37,6 +37,7 @@ agents-tree ~/src/api       # same, for another directory
 agents-tree 1a2b3c4d        # one session, by id or a unique prefix (an ambiguous one lists the matches)
 agents-tree -r              # only running subagents and their parents
 agents-tree -w              # live view like top, refreshed every 2 s (-n 5 for 5 s)
+agents-tree --provider codex # Codex sessions under ~/.codex (or $CODEX_HOME)
 agents-tree --provider grok # Grok Build sessions under ~/.grok (or $GROK_HOME)
 ```
 
@@ -87,6 +88,11 @@ taller than the terminal, the oldest finished agents are folded into a
   (or `$GROK_HOME`) whose process is still alive, including a session that is
   only waiting. A session also counts while its `updates.jsonl` was written in
   the last two minutes, or while a subagent's `meta.json` still says `running`.
+- **Running sessions (Codex)** are inferred from a transcript written in the
+  last two minutes, including one of its subagent transcripts. Codex's on-disk
+  files do not retain the process id for a quiet, waiting session, so such a
+  session may drop out of the all-sessions view until it writes again; a
+  directory or session-id target still shows its newest saved session.
 
 ## herdr plugin
 

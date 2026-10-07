@@ -1,6 +1,6 @@
-"""Agent CLIs agents-tree can read. Claude Code and Grok Build today; Codex later."""
+"""Agent CLIs agents-tree can read."""
 
-from agents_tree.providers import claude, grok
+from agents_tree.providers import claude, codex, grok
 
-PROVIDERS = {"claude": claude, "grok": grok}
+PROVIDERS = {"claude": claude, "codex": codex, "grok": grok}
 ALL = "all"  # every provider at once: what --provider and the herdr plugin default to
