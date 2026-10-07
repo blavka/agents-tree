@@ -11,7 +11,9 @@ Layout read here (internal to Grok Build; every field is optional):
            description, prompt, status, started_at, completed_at, ...}
 
   Child sessions live in the normal sessions tree (session_kind "subagent");
-  the parent's subagents/<id>/meta.json links to them.
+  the parent's subagents/<id>/meta.json links to them. A nested spawn writes
+  meta under the child session's own subagents/ (parent_session_id = that
+  child), so the tree is walked recursively into Agent.children.
 
 Running sessions: recent updates.jsonl activity, or a subagent still marked
 running. Override the home with GROK_HOME (same as Grok Build).
@@ -555,12 +557,7 @@ def _live_status(session_dir: Path, summary: Summary, now: float) -> str | None:
     recent = now - _mtime(updates) < STALE_AFTER_SECS if updates.exists() else False
     if not recent and summary.last_active_at and now - summary.last_active_at < STALE_AFTER_SECS:
         recent = True
-    running_child = False
-    for meta_path in _subagent_meta_paths(session_dir):
-        meta = _read_json(meta_path)
-        if meta.get("status") == "running":
-            running_child = True
-            break
+    running_child = _any_running_subagent(session_dir)
     if not recent and not running_child:
         return None
     if running_child or recent:
@@ -638,6 +635,31 @@ def _subagent_meta_paths(session_dir: Path) -> list[Path]:
     return paths
 
 
+def _any_running_subagent(session_dir: Path, *, _seen: set[Path] | None = None) -> bool:
+    """True if this session or any nested child still reports status running."""
+    if _seen is None:
+        _seen = set()
+    try:
+        key = session_dir.resolve()
+    except OSError:
+        key = session_dir
+    if key in _seen:
+        return False
+    _seen.add(key)
+    for meta_path in _subagent_meta_paths(session_dir):
+        meta = _read_json(meta_path)
+        if meta.get("status") == "running":
+            return True
+        child_id = _str_field(meta, "child_session_id")
+        child_cwd = _str_field(meta, "child_cwd")
+        if not child_id:
+            continue
+        child_dir = session_dir_by_id(child_id, child_cwd)
+        if child_dir and _any_running_subagent(child_dir, _seen=_seen):
+            return True
+    return False
+
+
 def _agent_from(aid: str, label: str, t: Transcript, state: str, status: str | None,
                 window: int | None, transcript: Path, *,
                 started: float | None = None, ended: float | None = None,
@@ -694,7 +716,8 @@ def _str_field(meta: dict, key: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _load_subagent(meta_path: Path, now: float, session_live: bool) -> tuple[Agent, Transcript]:
+def _load_subagent(meta_path: Path, now: float, session_live: bool
+                   ) -> tuple[Agent, Transcript, Path | None]:
     meta = _read_json(meta_path)
     aid = _str_field(meta, "subagent_id") or meta_path.parent.name
     child_id = _str_field(meta, "child_session_id")
@@ -731,7 +754,50 @@ def _load_subagent(meta_path: Path, now: float, session_live: bool) -> tuple[Age
         started=started, ended=None if state == RUNNING else (ended_meta or t.last),
         model=t.model, effort=t.effort,
     )
-    return agent, t
+    return agent, t, child_dir
+
+
+def _unique_agent_id(base: str, used: set[str]) -> str:
+    if base not in used:
+        return base
+    n = 2
+    while f"{base}#{n}" in used:
+        n += 1
+    return f"{base}#{n}"
+
+
+def _tree_from(session_dir: Path, now: float, session_live: bool,
+               *, seen_dirs: set[Path], used_ids: set[str]
+               ) -> tuple[list[Agent], list[Transcript]]:
+    """Agents listed under session_dir/subagents, with nested children filled in.
+
+    Nesting comes from the child session's own subagents/ directory (Grok writes
+    a nested spawn there, with parent_session_id pointing at that child). Cycles
+    and duplicate ids are defanged so every agent still appears once.
+    """
+    try:
+        key = session_dir.resolve()
+    except OSError:
+        key = session_dir
+    if key in seen_dirs:
+        return [], []
+    seen_dirs.add(key)
+
+    agents: list[Agent] = []
+    transcripts: list[Transcript] = []
+    for meta_path in _subagent_meta_paths(session_dir):
+        agent, t, child_dir = _load_subagent(meta_path, now, session_live)
+        agent.id = _unique_agent_id(agent.id, used_ids)
+        used_ids.add(agent.id)
+        transcripts.append(t)
+        if child_dir is not None:
+            children, nested_ts = _tree_from(
+                child_dir, now, session_live, seen_dirs=seen_dirs, used_ids=used_ids)
+            agent.children = children
+            transcripts.extend(nested_ts)
+        agents.append(agent)
+    agents.sort(key=lambda a: a.started or 0)
+    return agents, transcripts
 
 
 def _window_for(main_t: Transcript, children: list[Transcript],
@@ -755,13 +821,8 @@ def load(path: Path, live: dict | None = None, cwd: str | None = None,
     _apply_usage_file(main_t, path / "usage.json")
     _apply_summary(main_t, summary)
 
-    agents: dict[str, Agent] = {}
-    child_transcripts: list[Transcript] = []
-    for meta_path in _subagent_meta_paths(path):
-        agent, t = _load_subagent(meta_path, now, live is not None)
-        agents[agent.id] = agent
-        child_transcripts.append(t)
-    roots = sorted(agents.values(), key=lambda a: a.started or 0)
+    roots, child_transcripts = _tree_from(
+        path, now, live is not None, seen_dirs=set(), used_ids=set())
 
     if live is None:
         state, status = INACTIVE, "not running"

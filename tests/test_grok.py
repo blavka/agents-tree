@@ -253,6 +253,59 @@ def test_subagent_label_and_prompt(fake):
     assert s.agents[0].detail.prompt == "Read the auth module."
 
 
+def test_nested_subagent_hangs_under_the_agent_that_spawned_it(fake):
+    """Nested spawn: meta under the child's subagents/, like Claude's spawnDepth."""
+    path = fake.session("s1", "/w/app", [
+        user_chunk(0, "parent"), tool_call(1, "tu1", "spawn_subagent"),
+    ])
+    review = fake.subagent(
+        path, "review", subagent_type="general-purpose",
+        description="Review checkout path", status="running", started_offset=1)
+    fake.subagent(
+        review, "find", subagent_type="explore",
+        description="Find reserve and release callers", status="running",
+        started_offset=2,
+        updates=[
+            user_chunk(2, "Find every caller", "child-find"),
+            agent_chunk(3, "Found three.", "child-find"),
+        ],
+        child_id="child-find")
+
+    s = grok.load(path, now=T0 + 10)
+
+    assert [a.label for a in s.agents] == ["general-purpose: Review checkout path"]
+    assert [a.label for a in s.agents[0].children] == [
+        "explore: Find reserve and release callers"]
+    assert s.agents[0].children[0].id == "find"
+
+
+def test_nested_cycle_through_child_sessions_does_not_lose_agents(fake):
+    """A child that somehow lists its parent again must still show both agents."""
+    path = fake.session("s1", "/w/app", [agent_chunk(0, "hi")])
+    review = fake.subagent(path, "review", description="Review", status="completed",
+                           completed_offset=5, started_offset=1, child_id="child-review")
+    # Fabricate a meta under the child that points back at the top session.
+    meta_dir = review / "subagents" / "loop"
+    meta_dir.mkdir(parents=True)
+    (meta_dir / "meta.json").write_text(json.dumps({
+        "subagent_id": "loop",
+        "parent_session_id": "child-review",
+        "child_session_id": "s1",
+        "child_cwd": "/w/app",
+        "subagent_type": "explore",
+        "description": "loop",
+        "status": "completed",
+        "started_at": ts(3),
+        "completed_at": ts(4),
+    }))
+
+    s = grok.load(path, now=T0 + 10)
+
+    assert sum(a.size() for a in s.agents) == 2
+    assert [a.id for a in s.agents] == ["review"]
+    assert [a.id for a in s.agents[0].children] == ["loop"]
+
+
 def test_plugin_agent_type_drops_its_plugin_prefix(fake):
     path = fake.session("s1", "/w/app", [agent_chunk(0, "hi")])
     fake.subagent(path, "a1", subagent_type="systems-programming:golang-pro",
