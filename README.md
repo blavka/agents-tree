@@ -125,6 +125,10 @@ To release, bump `version` in `pyproject.toml`, `src/agents_tree/__init__.py` an
 v0.2.0`). `.github/workflows/publish.yaml` checks the tag against the version,
 tests, builds and publishes to PyPI through trusted publishing.
 
+[AGENTS.md](AGENTS.md) is the guide for working on the code, including adding a
+provider; [docs/demo/](docs/demo/README.md) shows how to check agents-tree
+against a real agent run in a throwaway project.
+
 Providers live in `src/agents_tree/providers/`: each turns one agent CLI's files
 into the provider-neutral `Session`/`Agent` model in `model.py`, which
 `render.py` draws.
