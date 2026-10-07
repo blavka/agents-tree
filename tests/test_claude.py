@@ -350,7 +350,7 @@ def test_custom_title_beats_the_generated_one_and_live_name_fills_in(fake):
     plain = fake.session("s2", "/w/a", [assistant(0)])
 
     assert claude.load(named).title == "Mine"
-    assert claude.load(plain, {"sessionId": "s2", "name": "wimber-fb"}).title == "wimber-fb"
+    assert claude.load(plain, {"sessionId": "s2", "name": "acme-shop"}).title == "acme-shop"
 
 
 def test_long_window_evidence_applies_to_the_whole_session(fake):
