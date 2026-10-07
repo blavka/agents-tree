@@ -5,7 +5,13 @@ Code session and the subagents it spawned as a tree, with each agent's model and
 effort, how full its context window is, how long it has been running, and its
 status.
 
+In a terminal, `agents-tree .`:
+
 ![agents-tree run in a demo project: a session and its five subagents, one nested](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/cli.png)
+
+As a live overlay in [herdr](https://herdr.dev), one key away (`prefix+a`):
+
+![The same tree as a live overlay in herdr](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/tree.png)
 
 It reads the transcripts Claude Code keeps on disk and never talks to a session,
 so nothing it prints ends up in an agent's context. It has no dependencies
@@ -79,8 +85,6 @@ taller than the terminal, the oldest finished agents are folded into a
 [herdr](https://herdr.dev) shows your agents, not their subagents. The plugin in
 this repository opens the live tree for the focused agent pane over that pane;
 closing it gives the layout back:
-
-![The same tree as a live overlay in herdr](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/tree.png)
 
 ```bash
 herdr integration install claude                 # herdr learns each pane's session id
