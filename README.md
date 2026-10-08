@@ -1,9 +1,9 @@
 # agents-tree
 
-See what your coding agents are doing. `agents-tree` shows every running Antigravity,
-Claude Code, Codex or Grok Build session and the subagents it spawned as a tree, with each
-agent's model and effort, how full its context window is, how long it has been
-running, and its status.
+`agents-tree` is a live terminal CLI and optional herdr plugin for viewing
+coding-agent sessions and their nested subagents as a tree. It shows Antigravity
+CLI (agy), Claude Code, Codex and Grok Build with each agent's model and effort,
+context use, elapsed time and status.
 
 In a terminal, `agents-tree .`:
 
@@ -13,11 +13,11 @@ As a live overlay in [herdr](https://herdr.dev), one key away (`prefix+a`):
 
 ![The same tree as a live overlay in herdr](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/tree.png)
 
-It reads the transcripts Antigravity, Claude Code, Codex and Grok Build keep on disk and never talks
+It reads the transcripts Antigravity CLI (agy), Claude Code, Codex and Grok Build keep on disk and never talks
 to a session, so nothing it prints ends up in an agent's context. It has no
 dependencies beyond Python 3.10.
 
-Antigravity, Claude Code, Codex and Grok Build are supported.
+Antigravity CLI (agy), Claude Code, Codex and Grok Build are supported.
 
 ## Install
 
@@ -27,6 +27,16 @@ uv tool install agents-tree      # or: pipx install agents-tree
 
 From a checkout: `uv tool install .`, or run it in place with
 `PYTHONPATH=src python3 -m agents_tree`.
+
+### Optional: herdr plugin
+
+Install the plugin to open the live tree over the focused agent pane with one key:
+
+```bash
+herdr integration install claude                 # herdr learns each pane's session id
+herdr plugin install blavka/agents-tree
+herdr plugin action invoke agents-tree.setup-keys
+```
 
 ## Use
 
@@ -102,13 +112,7 @@ taller than the terminal, the oldest finished agents are folded into a
 
 [herdr](https://herdr.dev) shows your agents, not their subagents. The plugin in
 this repository opens the live tree for the focused agent pane over that pane;
-closing it gives the layout back:
-
-```bash
-herdr integration install claude                 # herdr learns each pane's session id
-herdr plugin install blavka/agents-tree
-herdr plugin action invoke agents-tree.setup-keys
-```
+closing it gives the layout back.
 
 | Key | Action |
 | --- | --- |
