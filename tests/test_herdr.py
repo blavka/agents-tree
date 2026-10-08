@@ -53,11 +53,14 @@ if sys.argv[1:3] == ["config", "check"]:
 
 GROK_PANE = {"pane_id": "w1:p2", "agent": "grok", "cwd": "/w/app",
              "agent_session": {"agent": "grok", "kind": "id", "value": "grok-sess"}}
+AGY_PANE = {"pane_id": "w1:p3", "agent": "agy", "cwd": "/w/app",
+            "agent_session": {"agent": "agy", "kind": "id", "value": "agy-sess"}}
 
 
 @pytest.mark.parametrize(("pane", "target"), [
     (CLAUDE_PANE, ("claude", "sess-1")),
     (GROK_PANE, ("grok", "grok-sess")),
+    (AGY_PANE, ("agy", "agy-sess")),
     ({"agent": "claude", "cwd": "/w/app", "foreground_cwd": "/w/app/sub"},
      ("claude", "/w/app/sub")),
     ({"agent": "claude", "cwd": "/w/app"}, ("claude", "/w/app")),

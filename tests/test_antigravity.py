@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from agents_tree.model import DONE, INACTIVE, RUNNING
+from agents_tree.model import DONE, FAILED, INACTIVE, RUNNING, WAITING
 from agents_tree.providers import antigravity
 
 T0 = datetime(2026, 10, 8, 6, 0, 0, tzinfo=timezone.utc).timestamp()
@@ -24,7 +24,8 @@ def ts(offset: float) -> str:
 def user_input(offset: float, prompt: str) -> dict:
     model_note = (
         "<USER_SETTINGS_CHANGE>\n"
-        "The user changed setting `Model Selection` from None to Gemini 3.8 Flash (Medium).\n"
+        "The user changed setting `Model Selection` from None to Gemini 3.8 Flash (Medium). "
+        "No need to comment on this change.\n"
         "</USER_SETTINGS_CHANGE>"
     )
     return {
@@ -38,12 +39,15 @@ def user_input(offset: float, prompt: str) -> dict:
 
 
 def planner_response(offset: float, tool_calls: list[dict] | None = None,
-                     content: str | None = None, thinking: str | None = None) -> dict:
+                     content: str | None = None, thinking: str | None = None,
+                     status: str = "DONE", input_tokens: int | None = None,
+                     cache_read_tokens: int | None = None,
+                     output_tokens: int | None = None) -> dict:
     d = {
         "step_index": 1,
         "source": "MODEL",
         "type": "PLANNER_RESPONSE",
-        "status": "DONE",
+        "status": status,
         "created_at": ts(offset),
         "tool_calls": tool_calls or [],
     }
@@ -51,6 +55,12 @@ def planner_response(offset: float, tool_calls: list[dict] | None = None,
         d["content"] = content
     if thinking:
         d["thinking"] = thinking
+    if input_tokens is not None:
+        d["input_tokens"] = input_tokens
+    if cache_read_tokens is not None:
+        d["cache_read_tokens"] = cache_read_tokens
+    if output_tokens is not None:
+        d["output_tokens"] = output_tokens
     return d
 
 
@@ -94,7 +104,8 @@ class FakeAntigravity:
         self.brain.mkdir(parents=True, exist_ok=True)
         self.convos.mkdir(parents=True, exist_ok=True)
 
-    def session(self, sid: str, cwd: str, records: list[dict], mtime: float | None = None) -> Path:
+    def session(self, sid: str, cwd: str, records: list[dict], mtime: float | None = None,
+                model: str | None = None) -> Path:
         p = self.brain / sid / ".system_generated" / "logs" / "transcript.jsonl"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("".join(json.dumps(r) + "\n" for r in records))
@@ -108,6 +119,10 @@ class FakeAntigravity:
         c.execute("CREATE TABLE trajectory_metadata_blob (id TEXT, data BLOB)")
         blob_data = f"prefix file://{cwd} suffix".encode("utf-8")
         c.execute("INSERT INTO trajectory_metadata_blob VALUES ('main', ?)", (blob_data,))
+        if model:
+            c.execute("CREATE TABLE gen_metadata (data BLOB)")
+            c.execute("INSERT INTO gen_metadata VALUES (?)",
+                      (f"prefix {model} suffix".encode("utf-8"),))
         conn.commit()
         conn.close()
         return p
@@ -137,7 +152,8 @@ def test_read_basic_session(fake):
     assert s.id == "sess1"
     assert s.title == "Deploy the app"
     assert s.cwd == "/work/project"
-    assert s.main.model == "Gemini 3.8 Flash (Medium)"
+    assert s.main.model == "Gemini 3.8 Flash"
+    assert s.main.effort == "Medium"
     assert s.main.detail is not None
     assert s.main.detail.requests == 2
     assert s.main.detail.tools == {"run_command": 1}
@@ -233,3 +249,82 @@ def test_malformed_json_lines_ignored(fake):
     results = antigravity.sessions("sess_corrupt")
     assert len(results) == 1
     assert results[0].title == "Safe task"
+
+
+def test_failed_subagent_is_not_reported_as_done(fake):
+    fake.session("failed_child", "/work/project", [
+        user_input(11, "Check the deployment"),
+        planner_response(15, content="Deployment failed", status="ERROR"),
+    ])
+    fake.session("parent", "/work/project", [
+        user_input(0, "Deploy the app"),
+        planner_response(10, tool_calls=[invoke_call([{"Role": "Deployer"}])]),
+        generic(11, subagents_created_content(["failed_child"])),
+    ])
+
+    [session] = antigravity.sessions("parent")
+
+    assert session.agents[0].state == FAILED
+    assert session.agents[0].status == "error"
+
+
+def test_live_subagent_keeps_quiet_parent_in_running_sessions(fake, monkeypatch):
+    now = T0 + 1_000
+    monkeypatch.setattr(time, "time", lambda: now)
+    fake.session("working_child", "/work/project", [user_input(11, "Investigate the issue")],
+                 mtime=now - 10)
+    fake.session("quiet_parent", "/work/project", [
+        user_input(0, "Fix the issue"),
+        planner_response(10, tool_calls=[invoke_call([{"Role": "Investigator"}])]),
+        generic(11, subagents_created_content(["working_child"])),
+    ], mtime=now - 180)
+
+    [session] = antigravity.sessions(None)
+
+    assert session.id == "quiet_parent"
+    assert session.main.state == WAITING
+    assert session.agents[0].state == RUNNING
+
+
+def test_directory_target_decodes_workspace_uri(fake, tmp_path):
+    workspace = tmp_path / "project with spaces"
+    workspace.mkdir()
+    fake.session("uri_workspace", str(workspace).replace(" ", "%20"), [user_input(0, "Task")])
+
+    [session] = antigravity.sessions(str(workspace))
+
+    assert session.cwd == str(workspace)
+
+
+def test_context_and_output_tokens(fake):
+    fake.session("tokens_session", "/work/project", [
+        user_input(0, "Count tokens"),
+        planner_response(5, input_tokens=4000, cache_read_tokens=16000, output_tokens=350),
+        planner_response(10, input_tokens=5000, cache_read_tokens=16000, output_tokens=250),
+    ])
+
+    [session] = antigravity.sessions("tokens_session")
+
+    assert session.main.context_tokens == 21_000
+    assert session.main.detail is not None
+    assert session.main.detail.output_tokens == 600
+
+
+def test_model_and_effort_extraction(fake):
+    fake.session("child_agent", "/work/project", [
+        user_input(10, "Subtask"),
+    ], model="gemini-3.1-pro-low")
+
+    fake.session("parent_agent", "/work/project", [
+        user_input(0, "Main task"),
+        planner_response(5, tool_calls=[invoke_call([{"Role": "Worker"}])]),
+        generic(6, subagents_created_content(["child_agent"])),
+    ])
+
+    [session] = antigravity.sessions("parent_agent")
+
+    assert session.main.model == "Gemini 3.8 Flash"
+    assert session.main.effort == "Medium"
+    assert session.agents[0].model == "gemini-3.1-pro"
+    assert session.agents[0].effort == "low"
+    assert session.agents[0].context_window == 2_000_000

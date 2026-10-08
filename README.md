@@ -37,7 +37,7 @@ agents-tree ~/src/api       # same, for another directory
 agents-tree 1a2b3c4d        # one session, by id or a unique prefix (an ambiguous one lists the matches)
 agents-tree -r              # only running subagents and their parents
 agents-tree -w              # live view like top, refreshed every 2 s (-n 5 for 5 s)
-agents-tree --provider antigravity # Antigravity sessions under ~/.gemini/antigravity (or $ANTIGRAVITY_HOME)
+agents-tree --provider agy   # Antigravity CLI sessions
 agents-tree --provider codex # Codex sessions under ~/.codex (or $CODEX_HOME)
 agents-tree --provider grok # Grok Build sessions under ~/.grok (or $GROK_HOME)
 ```
@@ -94,9 +94,9 @@ taller than the terminal, the oldest finished agents are folded into a
   files do not retain the process id for a quiet, waiting session, so such a
   session may drop out of the all-sessions view until it writes again; a
   directory or session-id target still shows its newest saved session.
-- **Running sessions (Antigravity)** are inferred from transcripts written in the
-  last two minutes under `~/.gemini/antigravity/brain/` (or `$ANTIGRAVITY_HOME`)
-  and workspace paths from `~/.gemini/antigravity/conversations/`.
+- **Running sessions (Antigravity CLI / agy)** are inferred from transcripts written
+  in the last two minutes under `~/.gemini/antigravity-cli/brain/` (or
+  `$ANTIGRAVITY_HOME`). The older `~/.gemini/antigravity/` layout remains supported.
 
 ## herdr plugin
 

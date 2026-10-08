@@ -18,13 +18,24 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import unquote
 
-from agents_tree.model import (DONE, INACTIVE, RUNNING, STALE, Agent,
+from agents_tree.model import (DONE, FAILED, INACTIVE, RUNNING, STALE, WAITING, Agent,
                                Detail, Session)
 
-ANTIGRAVITY_DIR = Path(
-    os.environ.get("ANTIGRAVITY_HOME") or Path.home() / ".gemini" / "antigravity"
-)
+def _get_antigravity_dir() -> Path:
+    if os.environ.get("ANTIGRAVITY_HOME"):
+        return Path(os.environ["ANTIGRAVITY_HOME"])
+    for cand in (
+        Path.home() / ".gemini" / "antigravity-cli",
+        Path.home() / ".gemini" / "antigravity",
+    ):
+        if (cand / "brain").is_dir():
+            return cand
+    return Path.home() / ".gemini" / "antigravity"
+
+
+ANTIGRAVITY_DIR = _get_antigravity_dir()
 BRAIN = ANTIGRAVITY_DIR / "brain"
 CONVERSATIONS = ANTIGRAVITY_DIR / "conversations"
 
@@ -32,6 +43,7 @@ STALE_AFTER_SECS = 120
 _TEXT_LIMIT = 20_000
 _PROMPT_TAG_RE = re.compile(r"<USER_REQUEST>(.*?)</USER_REQUEST>", re.DOTALL)
 _SUBAGENT_CONVO_RE = re.compile(r'"conversationId":\s*"([^"]+)"')
+_FAILED_STATUSES = {"error", "failed", "cancelled", "canceled", "interrupted", "aborted"}
 
 
 def _parse_ts(value) -> float | None:
@@ -78,12 +90,16 @@ class Transcript:
     last_tool_at: float | None = None
     last_tool_pending: bool = False
     model: str | None = None
+    effort: str | None = None
     tool_counts: dict[str, int] = field(default_factory=dict)
     requests: int = 0
+    context: int | None = None
+    output_tokens: int = 0
     workspace: str | None = None
     subagents: list[SubagentSpec] = field(default_factory=list)
     pending_subagent_specs: list[dict] = field(default_factory=list)
     has_completed: bool = False
+    last_status: str | None = None
 
 
 @dataclass
@@ -135,9 +151,15 @@ def _parse_subagent_specs(raw_arg: str | list | None) -> list[dict]:
 
 def _handle_content(t: Transcript, content: str) -> None:
     if "Model Selection" in content:
-        m = re.search(r"Model Selection` from \S+ to ([^\n]+)\.", content)
+        m = re.search(r"Model Selection` from \S+ to (.+?)(?=\.\s*(?:[A-Z<]|$))", content)
         if m:
-            t.model = m.group(1).strip()
+            raw_model = m.group(1).strip().rstrip(".")
+            eff_match = re.search(r"^(.*?)\s*\(([^)]+)\)$", raw_model)
+            if eff_match:
+                t.model = eff_match.group(1).strip()
+                t.effort = eff_match.group(2).strip()
+            else:
+                t.model = raw_model
     if not t.workspace and "/Workspace" in content:
         m = re.search(r"(/[\w./-]+Workspace[\w./-]*)", content)
         if m:
@@ -155,6 +177,18 @@ def _handle_user_input(t: Transcript, content: str | None) -> None:
 
 def _handle_planner_response(t: Transcript, data: dict, ts_val: float | None) -> None:
     t.requests += 1
+    input_tokens = data.get("input_tokens")
+    cache_tokens = data.get("cache_read_tokens")
+    if isinstance(input_tokens, int) or isinstance(cache_tokens, int):
+        total_in = (input_tokens if isinstance(input_tokens, int) else 0) + (
+            cache_tokens if isinstance(cache_tokens, int) else 0
+        )
+        if total_in > 0:
+            t.context = total_in
+    out_tokens = data.get("output_tokens")
+    if isinstance(out_tokens, int):
+        t.output_tokens += out_tokens
+
     tool_calls = data.get("tool_calls")
     if isinstance(tool_calls, list) and tool_calls:
         for tc in tool_calls:
@@ -221,6 +255,10 @@ def _read_line(t: Transcript, raw: str) -> None:
     if not isinstance(data, dict):
         return
 
+    status = data.get("status")
+    if isinstance(status, str) and status:
+        t.last_status = status.lower()
+
     ts_val = _parse_ts(data.get("created_at"))
     if ts_val is not None:
         if t.first_ts is None:
@@ -228,12 +266,11 @@ def _read_line(t: Transcript, raw: str) -> None:
         t.last_ts = ts_val
 
     content = data.get("content")
-    if isinstance(content, str):
-        _handle_content(t, content)
-
     step_type = data.get("type")
     if step_type == "USER_INPUT":
         _handle_user_input(t, content if isinstance(content, str) else None)
+        if isinstance(content, str):
+            _handle_content(t, content)
     elif step_type == "PLANNER_RESPONSE":
         _handle_planner_response(t, data, ts_val)
     elif step_type == "GENERIC":
@@ -286,10 +323,36 @@ def _read_workspace_from_db(conv_id: str) -> str | None:
         if row and isinstance(row[0], (bytes, bytearray)):
             m = re.search(rb"file://([^\s\x00-\x1f\x7f-\xff\"'<>]+)", row[0])
             if m:
-                return m.group(1).decode("utf-8", errors="replace")
+                return unquote(m.group(1).decode("utf-8", errors="replace"))
     except (sqlite3.Error, OSError):
         pass
     return None
+
+
+def _read_model_from_db(conv_id: str) -> tuple[str | None, str | None]:
+    db_path = CONVERSATIONS / f"{conv_id}.db"
+    if not db_path.exists():
+        return None, None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        c = conn.cursor()
+        c.execute("SELECT data FROM gen_metadata LIMIT 1")
+        row = c.fetchone()
+        conn.close()
+        if row and isinstance(row[0], (bytes, bytearray)):
+            m = re.search(
+                rb"(?:gemini-[0-9a-zA-Z.-]+|claude-[0-9a-zA-Z.-]+|gpt-[0-9a-zA-Z.-]+)",
+                row[0],
+            )
+            if m:
+                raw = m.group(0).decode("utf-8", errors="replace")
+                for eff in ("low", "medium", "high", "xhigh", "tiered"):
+                    if raw.endswith(f"-{eff}"):
+                        return raw[:-len(eff) - 1], eff
+                return raw, None
+    except (sqlite3.Error, OSError):
+        pass
+    return None, None
 
 
 @dataclass
@@ -324,6 +387,7 @@ def _discover_sessions() -> dict[str, ConvoMeta]:
 
 def _agent_from(aid: str, label: str, t: Transcript, state: str, status: str,
                 transcript: Path, *, model: str | None = None,
+                effort: str | None = None,
                 prompt: str | None = None) -> Agent:
     detail = Detail(
         prompt=prompt or t.first_prompt or t.last_prompt,
@@ -333,16 +397,20 @@ def _agent_from(aid: str, label: str, t: Transcript, state: str, status: str,
         last_tool_at=t.last_tool_at,
         last_tool_pending=t.last_tool_pending,
         last_text=t.last_text,
+        output_tokens=t.output_tokens,
         requests=t.requests,
         transcript=str(transcript),
     )
     eff_model = model or t.model or "Gemini"
+    eff_effort = effort or t.effort
     return Agent(
         id=aid,
         label=label,
         state=state,
         status=status,
         model=eff_model,
+        effort=eff_effort,
+        context_tokens=t.context,
         context_window=context_window(eff_model),
         started=t.first_ts,
         ended=t.last_ts if state != RUNNING else None,
@@ -365,7 +433,9 @@ def _build_subagents(parent_t: Transcript, convos: dict[str, ConvoMeta],
         mt = meta.mtime if meta else _mtime(transcript_path)
         is_live = (now - mt < STALE_AFTER_SECS) or (session_live and child_t.last_tool_pending)
 
-        if is_live:
+        if child_t.last_status in _FAILED_STATUSES:
+            state, status = FAILED, child_t.last_status
+        elif is_live:
             state, status = RUNNING, "running"
         elif child_t.has_completed:
             state, status = DONE, "completed"
@@ -379,6 +449,7 @@ def _build_subagents(parent_t: Transcript, convos: dict[str, ConvoMeta],
             role = child_t.first_prompt.splitlines()[0][:40]
         label = f"{spec.type_name or 'subagent'}: {role or cid[:8]}"
 
+        db_model, db_effort = _read_model_from_db(cid)
         agent = _agent_from(
             cid,
             label,
@@ -386,7 +457,8 @@ def _build_subagents(parent_t: Transcript, convos: dict[str, ConvoMeta],
             state,
             status,
             transcript_path,
-            model=spec.model or child_t.model,
+            model=db_model or spec.model or child_t.model,
+            effort=db_effort or child_t.effort,
             prompt=spec.prompt or child_t.first_prompt,
         )
         agent.children = _build_subagents(child_t, convos, now, session_live, seen | {cid})
@@ -394,14 +466,44 @@ def _build_subagents(parent_t: Transcript, convos: dict[str, ConvoMeta],
     return agents
 
 
+def _session_is_live(session_id: str, convos: dict[str, ConvoMeta], now: float,
+                     memo: dict[str, bool], seen: set[str] | None = None) -> bool:
+    """Whether a session or any of its descendants still has recent activity."""
+    if session_id in memo:
+        return memo[session_id]
+    if seen and session_id in seen:
+        return False
+    meta = convos.get(session_id)
+    if not meta:
+        return False
+    transcript = read_transcript(meta.transcript_path)
+    if transcript.last_status in _FAILED_STATUSES:
+        memo[session_id] = False
+        return False
+    if now - meta.mtime < STALE_AFTER_SECS:
+        memo[session_id] = True
+        return True
+    descendants = (seen or set()) | {session_id}
+    live = any(_session_is_live(child.conversation_id, convos, now, memo, descendants)
+               for child in transcript.subagents)
+    memo[session_id] = live
+    return live
+
+
 def _load_session(meta: ConvoMeta, convos: dict[str, ConvoMeta],
                   now: float, is_live: bool) -> Session:
     t = read_transcript(meta.transcript_path)
     cwd = meta.cwd or t.workspace
 
-    state = RUNNING if is_live else INACTIVE
-    status = "running" if is_live else "not running"
+    main_live = now - meta.mtime < STALE_AFTER_SECS
+    if main_live:
+        state, status = RUNNING, "running"
+    elif is_live:
+        state, status = WAITING, "waiting for subagent"
+    else:
+        state, status = INACTIVE, "not running"
 
+    db_model, db_effort = _read_model_from_db(meta.session_id)
     main_agent = _agent_from(
         "main",
         "main",
@@ -409,9 +511,11 @@ def _load_session(meta: ConvoMeta, convos: dict[str, ConvoMeta],
         state,
         status,
         meta.transcript_path,
+        model=t.model or db_model,
+        effort=t.effort or db_effort,
     )
 
-    agents = _build_subagents(t, convos, now, is_live, {meta.session_id})
+    agents = _build_subagents(t, convos, now, main_live, {meta.session_id})
 
     title = t.first_prompt or meta.session_id[:8]
     title = title.splitlines()[0][:80]
@@ -441,8 +545,9 @@ def sessions(target: str | None) -> list[Session]:
 
     roots = {sid: meta for sid, meta in convos.items() if sid not in subagent_ids}
 
-    # Live sessions: transcript modified in last 120s
-    live_ids = {sid for sid, meta in roots.items() if (now - meta.mtime) < STALE_AFTER_SECS}
+    # A quiet parent remains live while one of its subagents continues working.
+    live_memo: dict[str, bool] = {}
+    live_ids = {sid for sid in roots if _session_is_live(sid, convos, now, live_memo)}
 
     matched: list[tuple[ConvoMeta, bool]] = []
 

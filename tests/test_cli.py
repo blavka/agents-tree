@@ -113,3 +113,7 @@ def test_one_provider_is_asked_alone(monkeypatch):
 
 def test_provider_defaults_to_all():
     assert parse_args([]).provider == "all"
+
+
+def test_agy_provider_name_is_accepted():
+    assert parse_args(["--provider", "agy"]).provider == "agy"
