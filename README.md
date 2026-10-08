@@ -1,7 +1,7 @@
 # agents-tree
 
-See what your coding agents are doing. `agents-tree` shows every running Claude
-Code, Codex or Grok Build session and the subagents it spawned as a tree, with each
+See what your coding agents are doing. `agents-tree` shows every running Antigravity,
+Claude Code, Codex or Grok Build session and the subagents it spawned as a tree, with each
 agent's model and effort, how full its context window is, how long it has been
 running, and its status.
 
@@ -13,11 +13,11 @@ As a live overlay in [herdr](https://herdr.dev), one key away (`prefix+a`):
 
 ![The same tree as a live overlay in herdr](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/tree.png)
 
-It reads the transcripts Claude Code, Codex and Grok Build keep on disk and never talks
+It reads the transcripts Antigravity, Claude Code, Codex and Grok Build keep on disk and never talks
 to a session, so nothing it prints ends up in an agent's context. It has no
 dependencies beyond Python 3.10.
 
-Claude Code, Codex and Grok Build are supported.
+Antigravity, Claude Code, Codex and Grok Build are supported.
 
 ## Install
 
@@ -37,6 +37,7 @@ agents-tree ~/src/api       # same, for another directory
 agents-tree 1a2b3c4d        # one session, by id or a unique prefix (an ambiguous one lists the matches)
 agents-tree -r              # only running subagents and their parents
 agents-tree -w              # live view like top, refreshed every 2 s (-n 5 for 5 s)
+agents-tree --provider antigravity # Antigravity sessions under ~/.gemini/antigravity (or $ANTIGRAVITY_HOME)
 agents-tree --provider codex # Codex sessions under ~/.codex (or $CODEX_HOME)
 agents-tree --provider grok # Grok Build sessions under ~/.grok (or $GROK_HOME)
 ```
@@ -93,6 +94,9 @@ taller than the terminal, the oldest finished agents are folded into a
   files do not retain the process id for a quiet, waiting session, so such a
   session may drop out of the all-sessions view until it writes again; a
   directory or session-id target still shows its newest saved session.
+- **Running sessions (Antigravity)** are inferred from transcripts written in the
+  last two minutes under `~/.gemini/antigravity/brain/` (or `$ANTIGRAVITY_HOME`)
+  and workspace paths from `~/.gemini/antigravity/conversations/`.
 
 ## herdr plugin
 
