@@ -9,6 +9,7 @@ import sys
 from collections.abc import Callable
 
 from agents_tree import __version__, live
+from agents_tree.json_output import dumps as json_dumps
 from agents_tree.model import Session, override_window, sanitize
 from agents_tree.providers import ALL, PROVIDERS
 from agents_tree.render import render, style
@@ -59,6 +60,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                     help="live view refresh interval (default 2)")
     ap.add_argument("-r", "--running", action="store_true",
                     help="only running subagents (and their parents)")
+    ap.add_argument("--json", action="store_true",
+                    help="one JSON document for scripts (not available with --watch)")
     ap.add_argument("--window", type=_positive_int, metavar="TOKENS", default=_env_window(),
                     help="context window for the %% column (default: per model)")
     ap.add_argument("--provider", choices=[ALL, *sorted(PROVIDERS)], default=ALL,
@@ -70,6 +73,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     args = ap.parse_args(argv)
     if args.interval <= 0:
         ap.error("--interval must be positive")
+    if args.json and args.watch:
+        ap.error("--json cannot be used with --watch")
     return args
 
 
@@ -104,15 +109,22 @@ def _sessions(provider: str, target: str | None) -> list[Session]:
 def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     args = parse_args(argv)
-    color = args.color == "always" or (args.color == "auto" and sys.stdout.isatty()
-                                       and not os.environ.get("NO_COLOR"))
+    color = not args.json and (args.color == "always" or
+                               (args.color == "auto" and sys.stdout.isatty()
+                                and not os.environ.get("NO_COLOR")))
     load = loader(args)
     if not args.watch:
         try:
             sessions = load()
         except LookupError as e:
+            if args.json:
+                print(f"agents-tree: {e}", file=sys.stderr)
+                return 1
             print(style(color, "90", str(e)))
             return 1
+        if args.json:
+            print(json_dumps(sessions, running_only=args.running))
+            return 0
         print(render(sessions, running_only=args.running, color=color))
         return 0
     try:

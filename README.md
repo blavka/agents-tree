@@ -47,10 +47,15 @@ agents-tree ~/src/api       # same, for another directory
 agents-tree 1a2b3c4d        # one session, by id or a unique prefix (an ambiguous one lists the matches)
 agents-tree -r              # only running subagents and their parents
 agents-tree -w              # live view like top, refreshed every 2 s (-n 5 for 5 s)
+agents-tree --json .        # one schema-versioned JSON document for scripts
 agents-tree --provider agy   # Antigravity CLI sessions
 agents-tree --provider codex # Codex sessions under ~/.codex (or $CODEX_HOME)
 agents-tree --provider grok # Grok Build sessions under ~/.grok (or $GROK_HOME)
 ```
+
+`--json` writes the provider-neutral session and agent tree, including each
+agent's detail, to stdout. It is intended for scripts and other tools; errors
+go to stderr and it cannot be combined with `--watch`.
 
 In the live view:
 

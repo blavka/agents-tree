@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -48,10 +49,37 @@ def test_transcript_text_is_sanitised_before_printing(fake, capsys):
     assert "\x1b" not in capsys.readouterr().out
 
 
+def test_json_output_has_versioned_neutral_model(fake, capsys):
+    fake.session("abc123", "/w/a", [assistant(0, context=100_000)])
+
+    assert main(["abc123", "--json"]) == 0
+
+    result = json.loads(capsys.readouterr().out)
+    assert result["schema_version"] == 1
+    [session] = result["sessions"]
+    assert (session["id"], session["cwd"], session["kind"]) == ("abc123", None, None)
+    assert session["main"]["context_tokens"] == 100_000
+    assert session["main"]["detail"]["transcript"].endswith("abc123.jsonl")
+
+
+def test_json_errors_go_to_stderr(fake, capsys):
+    assert main(["missing", "--json"]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no Claude Code session matching 'missing'" in captured.err
+
+
 def test_watch_flag_does_not_swallow_the_target():
     args = parse_args(["-w", "."])
 
     assert (args.watch, args.target, args.interval) == (True, ".", 2.0)
+
+
+def test_json_cannot_watch(capsys):
+    with pytest.raises(SystemExit):
+        parse_args(["--json", "--watch"])
+    assert "--json cannot be used with --watch" in capsys.readouterr().err
 
 
 def test_interval_must_be_positive(capsys):
