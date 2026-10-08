@@ -352,6 +352,7 @@ def _match_id(target: str, roots: list[Record]) -> Record | None:
     if exact:
         matches = exact
     if len(matches) > 1:
+        matches.sort(key=lambda row: row[1].thread_id)
         shown = ", ".join(meta.thread_id[:13] for _, meta in matches[:5])
         raise LookupError(f"'{target}' matches {len(matches)} sessions: {shown}")
     return matches[0] if matches else None

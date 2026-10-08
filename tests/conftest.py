@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from agents_tree.model import DONE, RUNNING, WAITING, Agent, Session
-from agents_tree.providers import claude, codex, grok
+from agents_tree.providers import antigravity, claude, codex, grok
 
 T0 = datetime(2026, 10, 7, 6, 0, 0, tzinfo=timezone.utc).timestamp()
 NOW = 10_000.0
@@ -101,6 +101,10 @@ def fake(tmp_path, monkeypatch):
     monkeypatch.setattr(grok, "SESSIONS", tmp_path / "grok-sessions")
     monkeypatch.setattr(grok, "live_sessions", lambda: [])
     monkeypatch.setattr(codex, "SESSIONS", tmp_path / "codex-sessions")
+    monkeypatch.setattr(antigravity, "BRAIN", tmp_path / "antigravity-brain")
+    monkeypatch.setattr(antigravity, "CONVERSATIONS", tmp_path / "antigravity-convos")
+    antigravity._cache.clear()
+    antigravity._used.clear()
     claude._cache.clear()
     claude._used.clear()
     return f
