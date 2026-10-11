@@ -16,7 +16,8 @@ from agents_tree.model import (BLOCKED, DONE, FAILED, INACTIVE, RUNNING, STALE, 
 MAX_LABEL = 70
 MIN_LABEL = 16
 MAX_MODEL = 28
-HEADER = ("AGENT", "MODEL (EFFORT)", "CONTEXT", "ELAPSED", "STATUS")
+MAX_AGENT_NAME = 28
+HEADER = ("AGENT", "MODEL (EFFORT)", "CONTEXT", "ELAPSED", "STATUS", "NAME")
 SELECTED = "30;46"  # black on cyan
 
 STATE_COLORS = {RUNNING: "1;33", WAITING: "36", BLOCKED: "1;35", DONE: "32", FAILED: "31",
@@ -55,6 +56,10 @@ def model_text(a: Agent) -> str:
     return (a.model or "-") + (f" ({a.effort})" if a.effort else "")
 
 
+def agent_name(a: Agent) -> str:
+    return a.detail.agent_name if a.detail and a.detail.agent_name else "-"
+
+
 def share_text(a: Agent) -> str | None:
     """'25 % of 1M', or None when tokens or window are unknown."""
     if not (a.context_tokens and a.context_window):
@@ -69,6 +74,10 @@ def elapsed(a: Agent, now: float) -> float | None:
 
 def state_text(color: bool, a: Agent) -> str:
     return style(color, STATE_COLORS.get(a.state, "37"), a.status or a.state)
+
+
+def _cut(text: str, width: int) -> str:
+    return text if len(text) <= width else text[:width - 1] + "…"
 
 
 # --- choosing rows ---------------------------------------------------------------
@@ -117,6 +126,24 @@ def _plan(sessions: list[Session], running_only: bool,
 
 # --- the tree --------------------------------------------------------------------
 
+def _tree_rows(sessions: list[Session], running_only: bool,
+               hidden: set[int]) -> list[tuple[int, str, Agent]]:
+    """Session index, tree prefix and agent for every visible tree row."""
+    rows: list[tuple[int, str, Agent]] = []
+
+    def walk(agents: list[Agent], indent: str, session_index: int) -> None:
+        kept = _kept(agents, running_only, hidden)
+        for n, agent in enumerate(kept):
+            last = n == len(kept) - 1
+            rows.append((session_index, indent + ("└─ " if last else "├─ "), agent))
+            walk(agent.children, indent + ("   " if last else "│  "), session_index)
+
+    for session_index, session in enumerate(sessions):
+        rows.append((session_index, "", session.main))
+        walk(session.agents, "", session_index)
+    return rows
+
+
 def render(sessions: list[Session], **kwargs) -> str:
     return "\n".join(render_lines(sessions, **kwargs)[0])
 
@@ -133,32 +160,23 @@ def render_lines(sessions: list[Session], *, now: float | None = None,
     now = time.time() if now is None else now
     hidden, hidden_count = _plan(sessions, running_only, max_lines)
 
-    rows: list[tuple[int, str, Agent]] = []  # session index, tree prefix, agent
-
-    def walk(agents: list[Agent], indent: str, i: int) -> None:
-        kept = _kept(agents, running_only, hidden)
-        for n, a in enumerate(kept):
-            last = n == len(kept) - 1
-            rows.append((i, indent + ("└─ " if last else "├─ "), a))
-            walk(a.children, indent + ("   " if last else "│  "), i)
-
-    for i, s in enumerate(sessions):
-        rows.append((i, "", s.main))
-        walk(s.agents, "", i)
+    rows = _tree_rows(sessions, running_only, hidden)
 
     models = {id(a): model_text(a) for _, _, a in rows}
     contexts = {id(a): f"{fmt_tokens(a.context_tokens):>5} {share_text(a) or '  -'}"
                 for _, _, a in rows}
+    names = {id(a): agent_name(a) for _, _, a in rows}
     model_w = min(max([len(HEADER[1]), *map(len, models.values())]), MAX_MODEL)
     context_w = max([len(HEADER[2]), *map(len, contexts.values())])
     status_w = max([len(HEADER[4]), *(len(a.status or a.state) for _, _, a in rows)])
-    columns_w = model_w + context_w + 7 + status_w + 4 * 2
+    name_w = min(max([len(HEADER[5]), *map(len, names.values())]), MAX_AGENT_NAME)
+    columns_w = model_w + context_w + 7 + status_w + name_w + 5 * 2
     label_w = min(max((len(p) + len(a.label) for _, p, a in rows), default=0), MAX_LABEL)
     if width:
         label_w = max(min(label_w, width - columns_w - 2), MIN_LABEL)
 
     def cells(label: str, model: str, context: str, elapsed_: str) -> str:
-        model = model if len(model) <= model_w else model[:model_w - 1] + "…"
+        model = _cut(model, model_w)
         return f"{label:<{label_w}}  {model:<{model_w}}  {context:<{context_w}}  {elapsed_:>7}"
 
     out: list[str] = []
@@ -168,7 +186,8 @@ def render_lines(sessions: list[Session], *, now: float | None = None,
         out.append(line.rstrip())
         keys.append(key)
 
-    emit(style(color, "7", (cells(*HEADER[:4]) + "  " + HEADER[4]).ljust(width or 0)))
+    emit(style(color, "7", (cells(*HEADER[:4]) + f"  {HEADER[4]:<{status_w}}  "
+                              + HEADER[5]).ljust(width or 0)))
     for k, (i, prefix, a) in enumerate(rows):
         s = sessions[i]
         if a is s.main:
@@ -182,13 +201,17 @@ def render_lines(sessions: list[Session], *, now: float | None = None,
         label = a.label if len(a.label) <= room else a.label[:room - 1] + "…"
         line = cells(prefix + label, models[id(a)], contexts[id(a)],
                      fmt_duration(elapsed(a, now)))
+        status = a.status or a.state
+        name = _cut(names[id(a)], name_w)
         if key == selected:
-            emit(style(color, SELECTED, (line + "  " + (a.status or a.state)).ljust(width or 0)),
+            emit(style(color, SELECTED, (line + f"  {status:<{status_w}}  " + name)
+                 .ljust(width or 0)),
                  key)
         else:
             if a is s.main:
                 line = style(color, "1", label) + line[len(label):]
-            emit(line + "  " + state_text(color, a), key)
+            emit(line + "  " + style(color, STATE_COLORS.get(a.state, "37"),
+                                      f"{status:<{status_w}}") + "  " + name, key)
         # Note lines go right after the last row of the session.
         if k == len(rows) - 1 or rows[k + 1][0] != i:
             if hidden_count[i]:
