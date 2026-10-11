@@ -254,6 +254,21 @@ def test_live_sessions_are_reused_for_a_few_seconds(monkeypatch):
     assert len(calls) == 1
 
 
+def test_live_rows_deduplicate_a_resumed_session():
+    rows = [
+        {"sessionId": "s1", "kind": "background", "startedAt": 100, "state": "blocked"},
+        {"sessionId": "s1", "kind": "interactive", "startedAt": 200, "pid": 42,
+         "status": "busy"},
+        {"sessionId": "s2", "kind": "background", "startedAt": 150, "state": "idle"},
+    ]
+
+    assert claude._live_rows(rows) == [
+        {"sessionId": "s1", "cwd": None, "kind": "interactive", "status": "busy",
+         "name": None},
+        {"sessionId": "s2", "cwd": None, "kind": "background", "status": "idle", "name": None},
+    ]
+
+
 # --- regressions from review -------------------------------------------------
 
 def _two_agent_session(fake, main_extra=(), agent_records=None, *, mtime=None, **meta):

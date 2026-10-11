@@ -274,6 +274,36 @@ def _live_row(r: dict, status) -> dict:
             "status": status, "name": r.get("name")}
 
 
+def _live_rank(row: dict) -> tuple[int, bool, bool]:
+    """Choose the current process when Claude reports one session more than once."""
+    started = row.get("startedAt")
+    return (started if isinstance(started, int) and not isinstance(started, bool) else -1,
+            row.get("kind") == "interactive",
+            isinstance(row.get("pid"), int) and not isinstance(row.get("pid"), bool))
+
+
+def _live_rows(rows: list) -> list[dict]:
+    """Normalise and deduplicate raw ``claude agents --json`` rows by session ID.
+
+    Claude can retain an earlier background entry after an interactive session has
+    resumed.  They share a transcript, so rendering both would show the same tree
+    with contradictory main states.  The later process is the current one.
+    """
+    sessions: dict[str, dict] = {}
+    order: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("sessionId"), str):
+            continue
+        session_id = row["sessionId"]
+        previous = sessions.get(session_id)
+        if previous is None:
+            order.append(session_id)
+        if previous is None or _live_rank(row) > _live_rank(previous):
+            sessions[session_id] = row
+    return [_live_row(row, row.get("state") or row.get("status"))
+            for session_id in order if (row := sessions.get(session_id))]
+
+
 @dataclass(slots=True)
 class _LiveCache:
     at: float = float("-inf")
@@ -296,8 +326,7 @@ def _query_live() -> list[dict]:
                              text=True, timeout=10, check=False).stdout
         rows = json.loads(out)
         if isinstance(rows, list):
-            return [_live_row(r, r.get("state") or r.get("status")) for r in rows
-                    if isinstance(r, dict) and isinstance(r.get("sessionId"), str)]
+            return _live_rows(rows)
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
         pass
     rows = []
@@ -310,8 +339,8 @@ def _query_live() -> list[dict]:
             os.kill(pid, 0)
         except (OSError, ValueError, KeyError, TypeError):
             continue
-        rows.append(_live_row(r, r.get("status")))
-    return rows
+        rows.append(r)
+    return _live_rows(rows)
 
 
 def _mtime(path: Path) -> float:
