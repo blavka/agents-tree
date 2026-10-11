@@ -7,6 +7,7 @@ from conftest import T0, assistant, notification, title, tool_result, user
 
 from agents_tree.model import BLOCKED, DONE, FAILED, INACTIVE, RUNNING, STALE, WAITING
 from agents_tree.providers import claude
+from agents_tree.render import render_detail
 
 
 def test_load_reads_model_effort_context_and_title(fake):
@@ -77,6 +78,19 @@ def test_session_that_is_not_running_is_inactive(fake):
     main = claude.load(fake.session("s1", "/w/app", [assistant(0)])).main
 
     assert (main.state, main.status) == (INACTIVE, "not running")
+
+
+def test_agent_name_is_shown_in_its_detail(fake):
+    path = fake.session("s1", "/w/app", [assistant(0, tool_uses=["tu1"])])
+    fake.subagent(path, "planner", [assistant(1)], tool_use_id="tu1", name="plan-builder")
+
+    session = claude.load(path, now=T0 + 10)
+    detail = session.agents[0].detail
+
+    assert detail is not None
+    assert detail.agent_name == "plan-builder"
+    assert "Agent name\n  plan-builder" in "\n".join(render_detail(session, session.agents[0],
+                                                                  now=T0 + 10))
 
 
 def test_nested_subagent_hangs_under_the_agent_that_spawned_it(fake):

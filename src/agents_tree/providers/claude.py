@@ -289,19 +289,19 @@ def _live_rows(rows: list) -> list[dict]:
     resumed.  They share a transcript, so rendering both would show the same tree
     with contradictory main states.  The later process is the current one.
     """
-    sessions: dict[str, dict] = {}
+    by_session: dict[str, dict] = {}
     order: list[str] = []
     for row in rows:
         if not isinstance(row, dict) or not isinstance(row.get("sessionId"), str):
             continue
         session_id = row["sessionId"]
-        previous = sessions.get(session_id)
+        previous = by_session.get(session_id)
         if previous is None:
             order.append(session_id)
         if previous is None or _live_rank(row) > _live_rank(previous):
-            sessions[session_id] = row
+            by_session[session_id] = row
     return [_live_row(row, row.get("state") or row.get("status"))
-            for session_id in order if (row := sessions.get(session_id))]
+            for session_id in order if (row := by_session.get(session_id))]
 
 
 @dataclass(slots=True)
@@ -432,10 +432,10 @@ def find(target: str | None) -> Found:
 # --- building the tree --------------------------------------------------------
 
 def _agent_from(aid: str, label: str, t: Transcript, state: str, status: str | None,
-                window: int | None, transcript: Path) -> Agent:
+                window: int | None, transcript: Path, agent_name: str | None = None) -> Agent:
     main = aid == "main"
     detail = Detail(
-        prompt=t.last_prompt if main else t.first_prompt,
+        agent_name=agent_name, prompt=t.last_prompt if main else t.first_prompt,
         prompt_label="Last prompt" if main else "Prompt",
         tools=dict(t.tool_counts), last_tool=t.last_tool, last_tool_at=t.last_tool_at,
         last_tool_pending=bool(t.last_tool_id and t.last_tool_id not in t.tool_results),
@@ -512,7 +512,9 @@ def load(path: Path, live: dict | None = None, cwd: str | None = None,
                                         live is not None)
         agent_type = str(meta.get("agentType") or "?").rsplit(":", 1)[-1]
         label = f"{agent_type}: {meta.get('description') or aid}"
-        agents[aid] = _agent_from(aid, label, t, state, status, windows.get(t.model), jl)
+        name = meta.get("name")
+        agents[aid] = _agent_from(aid, label, t, state, status, windows.get(t.model), jl,
+                                  name if isinstance(name, str) and name else None)
         tool_use = meta.get("toolUseId")
         parent = meta.get("parentAgentId")
         if not (isinstance(parent, str) and parent != aid):

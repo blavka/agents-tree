@@ -229,6 +229,8 @@ def render_detail(session: Session, a: Agent, *, now: float | None = None,
                                   f"output tokens · id {a.id}"))
     if d.transcript:
         out.append(style(color, "90", _home(d.transcript)))
+    if d.agent_name:
+        out += ["", style(color, "1", "Agent name"), *_wrap(d.agent_name, width)]
     if d.tools:
         counts = ", ".join(f"{name} ×{n}" for name, n in
                            sorted(d.tools.items(), key=lambda kv: (-kv[1], kv[0])))

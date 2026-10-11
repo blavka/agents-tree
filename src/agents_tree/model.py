@@ -20,6 +20,7 @@ INACTIVE = "inactive"  # the session is not running
 class Detail:
     """What the detail view shows beyond the tree row."""
 
+    agent_name: str | None = None
     prompt: str | None = None
     prompt_label: str = "Prompt"
     tools: dict[str, int] = field(default_factory=dict)
@@ -98,6 +99,7 @@ def sanitize(sessions: list[Session]) -> None:
             a.status, a.model, a.effort = _line(a.status), _line(a.model), _line(a.effort)
             d = a.detail
             if d:
+                d.agent_name = _line(d.agent_name)
                 d.prompt, d.last_text = _lines(d.prompt), _lines(d.last_text)
                 d.last_tool, d.transcript = _line(d.last_tool), _line(d.transcript)
                 d.tools = {_line(k) or "": n for k, n in d.tools.items()}
