@@ -535,9 +535,11 @@ def load(path: Path, live: dict | None = None, cwd: str | None = None,
     else:
         status = live.get("status")
         state = _LIVE_STATES.get(status, WAITING) if isinstance(status, str) else WAITING
-    main = _agent_from("main", "main", main_t, state, status, windows.get(main_t.model), path)
+    session_name = (live or {}).get("name")
+    main = _agent_from("main", "main", main_t, state, status, windows.get(main_t.model), path,
+                       session_name if isinstance(session_name, str) and session_name else None)
     main.ended = main_t.last  # the main loop's span is its transcript's, live or not
-    title = (main_t.custom_title or main_t.title or (live or {}).get("name")
+    title = (main_t.custom_title or main_t.title or session_name
              or path.stem[:8])
     return Session(id=path.stem, title=title, main=main, agents=roots, cwd=cwd,
                    kind=(live or {}).get("kind"))

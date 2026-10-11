@@ -93,6 +93,15 @@ def test_agent_name_is_shown_in_its_detail(fake):
                                                                   now=T0 + 10))
 
 
+def test_main_agent_name_comes_from_the_live_session(fake):
+    path = fake.session("s1", "/w/app", [assistant(0)])
+
+    main = claude.load(path, {"sessionId": "s1", "status": "busy", "name": "main-builder"}).main
+
+    assert main.detail is not None
+    assert main.detail.agent_name == "main-builder"
+
+
 def test_nested_subagent_hangs_under_the_agent_that_spawned_it(fake):
     path = fake.session("s1", "/w/app", [assistant(0, tool_uses=["tu1"])])
     fake.subagent(path, "parent", [assistant(1, tool_uses=["tu2"])], tool_use_id="tu1",
