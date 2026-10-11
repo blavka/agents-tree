@@ -86,7 +86,6 @@ through the full tree.
 | context | tokens in the latest request (input + cache + output), and that as a share of the context window |
 | elapsed | first to last transcript entry; up to now while the agent runs |
 | status | subagents: `running` (active in the last 2 minutes, or waiting on a tool call), `completed` / `failed` (as Claude Code reported), `done` (finished, no outcome recorded), `idle` (a teammate waiting for its next message), `stale` (no sign of life and no completion marker); `main`: the session's own state, or `not running` |
-| name | Claude agent name usable to address the agent when present |
 
 ### Caveats
 

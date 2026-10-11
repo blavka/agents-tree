@@ -3,7 +3,6 @@ import re
 import pytest
 from conftest import NOW, agent, session
 
-from agents_tree.model import Detail
 from agents_tree.render import fmt_duration, fmt_tokens, fmt_window, render, render_lines
 
 
@@ -33,7 +32,7 @@ def test_row_shows_model_effort_context_elapsed_and_status():
     assert "opus-5-5 (high)" in row
     assert "250k 25 % of 1M" in row
     assert "1m00s" in row
-    assert "completed  -" in row
+    assert row.endswith("completed")
 
 
 def test_running_agent_elapsed_counts_up_to_now():
@@ -61,21 +60,11 @@ def test_header_names_the_columns_and_lines_up_with_them():
     text = render([session([agent("Explore: look")])], now=NOW)
 
     head, *rows = text.splitlines()
-    assert head.split() == ["AGENT", "MODEL", "(EFFORT)", "CONTEXT", "ELAPSED", "STATUS", "NAME"]
+    assert head.split() == ["AGENT", "MODEL", "(EFFORT)", "CONTEXT", "ELAPSED", "STATUS"]
     row = next(line for line in rows if "Explore" in line)
     assert head.index("MODEL") == row.index("opus-5-5")
     assert head.index("ELAPSED") + len("ELAPSED") == row.index("1m00s") + len("1m00s")
     assert head.index("STATUS") == row.index("completed")
-
-
-def test_agent_name_is_a_column_after_status():
-    named = agent("builder")
-    named.detail = Detail(agent_name="plan-builder")
-
-    row = next(line for line in render([session([named])], now=NOW).splitlines()
-               if "builder" in line and "completed" in line)
-
-    assert row.endswith("completed  plan-builder")
 
 
 def test_rows_without_context_keep_columns_aligned():
