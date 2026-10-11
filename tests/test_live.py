@@ -8,7 +8,8 @@ from agents_tree.model import Detail
 
 
 @pytest.mark.parametrize(("data", "events"), [
-    ("q", ["q"]), ("\x03", ["quit"]), ("r", ["toggle"]), ("\x1b", ["back"]),
+    ("q", ["q"]), ("\x03", ["quit"]), ("r", ["toggle"]), ("fF", ["fold", "fold"]),
+    ("\x1b", ["back"]),
     ("\x1b[A\x1b[B", ["up", "down"]), ("\x1bOA", ["up"]), ("jk", ["down", "up"]),
     ("\r", ["open"]), ("\x1b[C", ["open"]), ("\x1b[D", ["back"]),
     ("\x1b[5~\x1b[6~", ["pgup", "pgdn"]), ("\x1b[H\x1b[F", ["home", "end"]),
@@ -93,6 +94,21 @@ def test_tree_taller_than_the_screen_scrolls_to_keep_the_selection_visible():
     assert screen[0].startswith("AGENT")  # the header stays put
     assert any(f"r{23}" in line for line in screen[1:-1])
     assert "more lines" in screen[-1]
+
+
+def test_f_shows_finished_agents_folded_to_fit_the_screen():
+    finished = [agent(f"done-{n}", started=n) for n in range(30)]
+    view, sessions = View(), [session(finished)]
+
+    folded = _drawn(view, sessions, rows=10)
+    handle(view, "fold")
+    expanded = _drawn(view, sessions, rows=10)
+
+    assert "older finished agents hidden" in "\n".join(folded)
+    assert "older finished agents hidden" not in "\n".join(expanded)
+    assert "f fold finished" in expanded[-1]
+    assert "done-0" in "\n".join(expanded)
+    assert "more lines" in expanded[-1]
 
 
 def test_detail_shows_prompt_tools_and_last_message():

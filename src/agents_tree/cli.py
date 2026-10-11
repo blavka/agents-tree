@@ -23,7 +23,8 @@ targets:
   SESSION-ID    one session (a unique prefix is enough)
 
 live view keys: ↑/↓ or j/k select, enter or a click shows the agent's detail,
-  esc goes back, r toggles running-only, q quits
+  esc goes back, r toggles running-only, f shows or folds older finished agents,
+  q quits
 
 Reads local transcripts only. Run it in its own terminal (or the herdr plugin):
 started with `!` inside an agent, its output lands in that agent's context.

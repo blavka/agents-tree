@@ -66,12 +66,14 @@ In the live view:
 | `Esc` / `←` / `q` | back to the tree (in the tree: clear the selection, then quit) |
 | `PgUp` `PgDn` `Home` `End` | scroll the detail, or jump through the tree |
 | `r` | toggle running-only |
+| `f` | show or fold older finished agents that were hidden to fit the screen |
 | `Ctrl+C` | quit |
 
 The live view takes the mouse for clicks and the wheel; most terminals still
 select text with Shift held, or start it with `--no-mouse`. When the tree is
 taller than the terminal, the oldest finished agents are folded into a
-"… N older finished agents hidden" line.
+"… N older finished agents hidden" line; press `f` to expand them and scroll
+through the full tree.
 
 `Enter` on a row opens that agent's detail:
 

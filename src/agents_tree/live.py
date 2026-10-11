@@ -1,7 +1,8 @@
 """The live view: a top-like tree with a selectable row and a detail screen per agent.
 
 Keys: ↑/↓ (j/k, the wheel) select, Enter (→, l, a click) opens the detail, Esc
-(←, h, q) goes back, q quits from the tree, r toggles running-only.
+(←, h, q) goes back, q quits from the tree, r toggles running-only, and f
+shows or folds older finished agents.
 
 Data loads on a background thread every `interval` seconds, so keys never wait
 for a refresh.
@@ -37,7 +38,7 @@ _CSI = {"A": "up", "B": "down", "C": "open", "D": "back", "H": "home", "F": "end
 _TILDE = {"1": "home", "7": "home", "4": "end", "8": "end", "5": "pgup", "6": "pgdn"}
 _CHARS = {"k": "up", "j": "down", "l": "open", "\r": "open", "\n": "open", "h": "back",
           "g": "home", "G": "end", " ": "pgdn", "q": "q", "Q": "q", "\x03": "quit",
-          "r": "toggle", "R": "toggle", "\x1b": "back"}
+          "r": "toggle", "R": "toggle", "f": "fold", "F": "fold", "\x1b": "back"}
 _FAR = 10**9
 
 
@@ -66,6 +67,7 @@ def parse_keys(data: str) -> list[Event]:
 @dataclass
 class View:
     running_only: bool = False
+    fold_finished: bool = True
     selected: Key | None = None
     detail: bool = False
     scroll: int = 0  # first body line shown (of the tree, or of the detail)
@@ -87,6 +89,9 @@ def handle(view: View, event: Event) -> bool:
         return False
     if event == "toggle":
         view.running_only, view.scroll = not view.running_only, 0
+        return True
+    if event == "fold":
+        view.fold_finished, view.scroll = not view.fold_finished, 0
         return True
     step = _step(view, event)
     if view.detail:
@@ -141,7 +146,8 @@ def draw(view: View, sessions: list[Session] | None, error: str | None, *, cols:
         hint = "↑↓ scroll · esc back · q quit"
     else:
         lines, line_keys = render_lines(sessions, now=now, running_only=view.running_only,
-                                        color=color, width=cols, max_lines=room,
+                                        color=color, width=cols,
+                                        max_lines=room if view.fold_finished else None,
                                         selected=view.selected)
         # Running agents alone may not fit: scroll under the pinned header, keeping
         # the selected row on screen.
@@ -156,7 +162,8 @@ def draw(view: View, sessions: list[Session] | None, error: str | None, *, cols:
         view.row_keys = [k for k in line_keys if k]
         more = len(lines) - view.scroll - (len(body) - 1)
         toggle = "all" if view.running_only else "running only"
-        hint = f"↑↓ select · enter detail · r {toggle} · q quit"
+        folding = "show hidden" if view.fold_finished else "fold finished"
+        hint = f"↑↓ select · enter detail · r {toggle} · f {folding} · q quit"
     view.screen_keys = keys
     if more > 0:
         hint += f" · {more} more lines"
