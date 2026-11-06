@@ -61,7 +61,7 @@ In the live view:
 
 | Key | Does |
 | --- | --- |
-| `↑` `↓` / `j` `k` / wheel | select an agent |
+| `↑` `↓` / `j` `k` / wheel / pointer | select an agent (hovering a row highlights it) |
 | `Enter` / `→` / click | open its detail: the prompt it was given, its tool calls (and the one it is waiting on), its last message, request and token counts, transcript path |
 | `Esc` / `←` / `q` | back to the tree (in the tree: clear the selection, then quit) |
 | `PgUp` `PgDn` `Home` `End` | scroll the detail, or jump through the tree |
@@ -69,7 +69,7 @@ In the live view:
 | `f` | show or fold older finished agents that were hidden to fit the screen |
 | `Ctrl+C` | quit |
 
-The live view takes the mouse for clicks and the wheel; most terminals still
+The live view takes the mouse for clicks, hovering and the wheel; most terminals still
 select text with Shift held, or start it with `--no-mouse`. When the tree is
 taller than the terminal, the oldest finished agents are folded into a
 "… N older finished agents hidden" line; press `f` to expand them and scroll

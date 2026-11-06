@@ -1,6 +1,6 @@
 """The live view: a top-like tree with a selectable row and a detail screen per agent.
 
-Keys: ↑/↓ (j/k, the wheel) select, Enter (→, l, a click) opens the detail, Esc
+Keys: ↑/↓ (j/k, the wheel, the pointer) select, Enter (→, l, a click) opens the detail, Esc
 (←, h, q) goes back, q quits from the tree, r toggles running-only, and f
 shows or folds older finished agents.
 
@@ -50,6 +50,8 @@ def parse_keys(data: str) -> list[Event]:
         if button is not None:
             if press == "M" and button == "0":
                 events.append(("click", int(y)))
+            elif press == "M" and button == "35":  # moved, no button held
+                events.append(("hover", int(y)))
             elif button in ("64", "65"):
                 events.append("up" if button == "64" else "down")
         elif final is not None:
@@ -108,7 +110,9 @@ def handle(view: View, event: Event) -> bool:
         row = event[1] - 1
         key = view.screen_keys[row] if 0 <= row < len(view.screen_keys) else None
         if key:
-            view.selected, view.detail, view.scroll = key, True, 0
+            view.selected = key
+            if event[0] == "click":
+                view.detail, view.scroll = True, 0
     elif event == "open":
         if view.selected:
             view.detail, view.scroll = True, 0
@@ -227,7 +231,7 @@ def _screen(keys: bool, mouse: bool):
     if keys:
         saved = termios.tcgetattr(sys.stdin.fileno())
         tty.setcbreak(sys.stdin.fileno())
-    mouse_on, mouse_off = (("\033[?1000h\033[?1006h", "\033[?1000l\033[?1006l") if mouse
+    mouse_on, mouse_off = (("\033[?1003h\033[?1006h", "\033[?1003l\033[?1006l") if mouse
                            else ("", ""))
     sys.stdout.write("\033[?1049h\033[?25l\033[?7l" + mouse_on)
     sys.stdout.flush()

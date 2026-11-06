@@ -22,7 +22,7 @@ targets:
   DIR           sessions running in DIR ("." works); if none, DIR's newest session
   SESSION-ID    one session (a unique prefix is enough)
 
-live view keys: ↑/↓ or j/k select, enter or a click shows the agent's detail,
+live view keys: ↑/↓, j/k or the pointer select, enter or a click shows the agent's detail,
   esc goes back, r toggles running-only, f shows or folds older finished agents,
   q quits
 
