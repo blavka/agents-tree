@@ -46,6 +46,7 @@ agents-tree .               # sessions running in this directory (or its newest 
 agents-tree ~/src/api       # same, for another directory
 agents-tree 1a2b3c4d        # one session, by id or a unique prefix (an ambiguous one lists the matches)
 agents-tree -r              # only running subagents and their parents
+agents-tree -s              # only the sessions of this directory (or its project, from a subfolder)
 agents-tree -w              # live view like top, refreshed every 2 s (-n 5 for 5 s)
 agents-tree --json .        # one schema-versioned JSON document for scripts
 agents-tree --provider agy   # Antigravity CLI sessions

@@ -144,3 +144,53 @@ def test_provider_defaults_to_all():
 
 def test_agy_provider_name_is_accepted():
     assert parse_args(["--provider", "agy"]).provider == "agy"
+
+
+def _at(sid, cwd):
+    return Session(id=sid, title=sid, main=Agent(id="main", label="main"), cwd=cwd)
+
+
+@pytest.fixture
+def around(tmp_path, monkeypatch):
+    """Sessions in a repo, in its subfolder, in a sibling repo, and one with no directory;
+    the shell sits in the repo's subfolder."""
+    repo, sub, other = tmp_path / "repo", tmp_path / "repo" / "src", tmp_path / "other"
+    for d in (sub, other):
+        d.mkdir(parents=True)
+    sessions = [_at("in-repo", str(repo)), _at("in-sub", str(sub)),
+                _at("in-other", str(other)), _at("nowhere", None)]
+    monkeypatch.setattr(cli, "_sessions", lambda provider, target: sessions)
+    monkeypatch.chdir(sub)
+    return tmp_path
+
+
+def test_session_flag_keeps_the_sessions_of_the_current_directory(around):
+    load = cli.loader(parse_args(["-s"]))
+
+    assert [s.id for s in load()] == ["in-repo", "in-sub"]
+
+
+def test_session_flag_also_keeps_sessions_below_the_current_directory(around, monkeypatch):
+    monkeypatch.chdir(around)
+
+    assert [s.id for s in cli.loader(parse_args(["--session"]))()] == [
+        "in-repo", "in-sub", "in-other"]
+
+
+def test_without_the_session_flag_every_session_stays(around):
+    assert len(cli.loader(parse_args([]))()) == 4
+
+
+def test_session_flag_with_nothing_here_says_so(around, monkeypatch, tmp_path_factory):
+    elsewhere = tmp_path_factory.mktemp("elsewhere")
+    monkeypatch.chdir(elsewhere)
+
+    with pytest.raises(LookupError, match="^no running sessions in .*elsewhere"):
+        cli.loader(parse_args(["-s"]))()
+
+
+def test_session_flag_and_a_target_do_not_mix(capsys):
+    with pytest.raises(SystemExit):
+        parse_args(["-s", "abc123"])
+
+    assert "--session cannot be used with a target" in capsys.readouterr().err
