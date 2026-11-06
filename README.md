@@ -79,13 +79,20 @@ through the full tree.
 
 ![Detail of a running subagent: its prompt, tool calls and the command it waits on](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/detail.png)
 
+The header counts sessions by state (`▲ blocked`, `● running`, `○ waiting`,
+`– inactive`) and names the model once when every row uses the same one. Sessions
+are grouped under their directory's name, the ones waiting on a person first, then
+the working ones; each session is one row, its subagents below it.
+
 | Column | Meaning |
 | --- | --- |
-| label | `agent-type: description` as the spawning agent gave it; `main` for the session itself |
-| model (effort) | model of the agent's latest request, and its effort level (models without effort show none) |
-| context | tokens in the latest request (input + cache + output), and that as a share of the context window |
-| elapsed | first to last transcript entry; up to now while the agent runs |
-| status | subagents: `running` (active in the last 2 minutes, or waiting on a tool call), `completed` / `failed` (as Claude Code reported), `done` (finished, no outcome recorded), `idle` (a teammate waiting for its next message), `stale` (no sign of life and no completion marker); `main`: the session's own state, or `not running` |
+| label | state icon, then the session's title, or `agent-type: description` as the spawning agent gave it |
+| model (effort) | only when rows differ: model of the agent's latest request, and its effort level (models without effort show none) |
+| context | tokens in the latest request (input + cache + output) as a bar and a share of the context window; tokens alone when the window is unknown |
+| time | subagents and working sessions: first to last transcript entry, up to now while running; other sessions: how long ago they last did anything (`3h05m ago`) |
+| status | subagents: `running` (active in the last 2 minutes, or waiting on a tool call), `completed` / `failed` (as Claude Code reported), `done` (finished, no outcome recorded), `idle` (a teammate waiting for its next message), `stale` (no sign of life and no completion marker); sessions: their own state, or `not running` |
+
+`Enter` on a session row shows its directory and full id.
 
 ### Caveats
 

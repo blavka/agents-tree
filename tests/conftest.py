@@ -116,7 +116,7 @@ _STATES = {"running": RUNNING, "completed": DONE, "busy": RUNNING, "idle": WAITI
 
 
 def agent(label, status="completed", started=0.0, children=(), model="opus-5-5",
-          effort: str | None = "high", ctx: int | None = 50_000, window=1_000_000):
+          effort: str | None = "high", ctx: int | None = 50_000, window: int | None = 1_000_000):
     return Agent(id=label, label=label, state=_STATES.get(status, DONE), status=status,
                  model=model, effort=effort, context_tokens=ctx, context_window=window,
                  started=started, ended=None if status == "running" else started + 60,

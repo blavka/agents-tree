@@ -91,7 +91,7 @@ def test_tree_taller_than_the_screen_scrolls_to_keep_the_selection_visible():
         handle(view, "down")
     screen = _drawn(view, sessions, rows=10)
 
-    assert screen[0].startswith("AGENT")  # the header stays put
+    assert "CONTEXT" in screen[0]  # the header stays put
     assert any(f"r{23}" in line for line in screen[1:-1])
     assert "more lines" in screen[-1]
 
@@ -120,6 +120,7 @@ def test_detail_shows_prompt_tools_and_last_message():
     assert "4 requests · 1k output tokens" in text
     assert "Tools (8 calls)" in text and "Bash ×5, Read ×3" in text
     assert "last: Bash, 30s ago · waiting for its result" in text
+    assert "/w/app · session s1" in text
     assert re.search(r"Prompt\n  Find the parser.\n  Then report.", text)
     assert "Last message\n  Found it in parse.py." in text
 

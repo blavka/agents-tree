@@ -16,11 +16,18 @@ from agents_tree.model import (BLOCKED, DONE, FAILED, INACTIVE, RUNNING, STALE, 
 MAX_LABEL = 70
 MIN_LABEL = 16
 MAX_MODEL = 28
-HEADER = ("AGENT", "MODEL (EFFORT)", "CONTEXT", "ELAPSED", "STATUS")
+MODEL_HEADER, CONTEXT_HEADER, TIME_HEADER, STATUS_HEADER = (
+    "MODEL (EFFORT)", "CONTEXT", "TIME", "STATUS")
+BAR = 8  # context bar cells
+CONTEXT_W = BAR + 5  # the bar, a space, and '100%'
+NO_DIR = "(no directory)"
 SELECTED = "30;46"  # black on cyan
 
 STATE_COLORS = {RUNNING: "1;33", WAITING: "36", BLOCKED: "1;35", DONE: "32", FAILED: "31",
                 STALE: "90", INACTIVE: "90"}
+ICONS = {RUNNING: "●", WAITING: "○", BLOCKED: "▲", DONE: "✓", FAILED: "✗", STALE: "·",
+         INACTIVE: "–"}
+SUMMARY_ORDER = (BLOCKED, RUNNING, WAITING, STALE, INACTIVE, DONE, FAILED)
 
 # (session id, agent id): how the live view refers to a row across refreshes.
 Key = tuple[str, str]
@@ -48,7 +55,9 @@ def fmt_duration(secs: float | None) -> str:
         return f"{secs}s"
     if secs < 3600:
         return f"{secs // 60}m{secs % 60:02d}s"
-    return f"{secs // 3600}h{secs % 3600 // 60:02d}m"
+    if secs < 86400:
+        return f"{secs // 3600}h{secs % 3600 // 60:02d}m"
+    return f"{secs // 86400}d{secs % 86400 // 3600:02d}h"
 
 
 def model_text(a: Agent) -> str:
@@ -77,6 +86,28 @@ def _cut(text: str, width: int) -> str:
 
 # --- choosing rows ---------------------------------------------------------------
 
+def _urgency(s: Session) -> int:
+    """Sessions waiting on a person first, then working ones, then idle, then the rest."""
+    if s.main.state == BLOCKED:
+        return 0
+    if s.main.has_running() or any(a.has_running() for a in s.agents):
+        return 1
+    return 2 if s.main.state == WAITING else 3
+
+
+def _ordered(sessions: list[Session]) -> list[Session]:
+    """Grouped by directory. Groups and the sessions in them by urgency, then newest
+    first; a group sorts by its most urgent session. Start time, not latest activity,
+    breaks ties, so two working sessions do not swap places on every refresh."""
+    def rank(s: Session) -> tuple[int, float]:
+        return _urgency(s), -(s.main.started or 0)
+
+    groups: dict[str, list[Session]] = {}
+    for s in sorted(sessions, key=rank):
+        groups.setdefault(s.cwd or "", []).append(s)
+    return [s for group in groups.values() for s in group]
+
+
 def _kept(agents: list[Agent], running_only: bool, hidden: set[int]) -> list[Agent]:
     return [a for a in agents
             if id(a) not in hidden and (not running_only or a.has_running())]
@@ -95,10 +126,11 @@ def _plan(sessions: list[Session], running_only: bool,
     if not max_lines:
         return hidden, hidden_count
     shown = [_drawn(s.agents, running_only) for s in sessions]
+    groups = len({s.cwd or "" for s in sessions})
 
     def total() -> int:
-        notes = sum(1 for i in range(len(sessions)) if hidden_count[i] or not shown[i])
-        return 1 + sum(2 + n for n in shown) + notes + max(len(sessions) - 1, 0)
+        notes = sum(1 for n in hidden_count if n)
+        return 1 + groups + sum(1 + n for n in shown) + notes
 
     # Finished subtrees whose parent is drawn are disjoint: each can go on its own.
     candidates = []
@@ -119,8 +151,6 @@ def _plan(sessions: list[Session], running_only: bool,
     return hidden, hidden_count
 
 
-# --- the tree --------------------------------------------------------------------
-
 def _tree_rows(sessions: list[Session], running_only: bool,
                hidden: set[int]) -> list[tuple[int, str, Agent]]:
     """Session index, tree prefix and agent for every visible tree row."""
@@ -134,9 +164,44 @@ def _tree_rows(sessions: list[Session], running_only: bool,
             walk(agent.children, indent + ("   " if last else "│  "), session_index)
 
     for session_index, session in enumerate(sessions):
-        rows.append((session_index, "", session.main))
-        walk(session.agents, "", session_index)
+        rows.append((session_index, " ", session.main))
+        walk(session.agents, "   ", session_index)
     return rows
+
+
+# --- the tree --------------------------------------------------------------------
+
+def _summary(sessions: list[Session], model: str | None) -> str:
+    """'▲ 1 blocked  ● 2 running  ○ 9 waiting', counting each session's own state."""
+    counts: dict[str, int] = {}
+    for s in sessions:
+        counts[s.main.state] = counts.get(s.main.state, 0) + 1
+    parts = [f"{ICONS[state]} {counts[state]} {state}" for state in SUMMARY_ORDER
+             if state in counts]
+    return "  ".join(parts + ([f"· {model}"] if model else []))
+
+
+def _context_cell(a: Agent, colored: bool) -> str:
+    """A thin bar and the share of the context window, colored by how full it is.
+    Line glyphs, not blocks: blocks fill the whole cell and stack into a wall."""
+    if not (a.context_tokens and a.context_window):
+        return style(colored, "90", f"{fmt_tokens(a.context_tokens):>{CONTEXT_W}}")
+    share = a.context_tokens / a.context_window
+    filled = min(round(share * BAR), BAR)
+    code = "32" if share < 0.5 else "33" if share < 0.8 else "31"
+    return (style(colored, code, "━" * filled) + style(colored, "90", "─" * (BAR - filled))
+            + style(colored, code, f" {share * 100:3.0f}%"))
+
+
+def _time_text(a: Agent, is_main: bool, now: float) -> str:
+    """How long it ran; for a session that is not working, how long ago it last did."""
+    if is_main and a.state != RUNNING and a.ended is not None:
+        return f"{fmt_duration(now - a.ended)} ago"
+    return fmt_duration(elapsed(a, now))
+
+
+def _project(cwd: str | None) -> str:
+    return os.path.basename(cwd.rstrip(os.sep)) or cwd if cwd else NO_DIR
 
 
 def render(sessions: list[Session], **kwargs) -> str:
@@ -149,68 +214,76 @@ def render_lines(sessions: list[Session], *, now: float | None = None,
                  selected: Key | None = None) -> tuple[list[str], list[Key | None]]:
     """Lines of the tree view, and for each line the agent it shows (None for others).
 
-    The first line is the column header. With max_lines, the oldest finished agents
-    are left out until the view fits; running agents always stay.
+    The first line is the header: a count of sessions by state, then the column
+    names. Sessions are grouped by directory, the ones that need attention first,
+    one line each, with their subagents below. With max_lines, the oldest finished
+    agents are left out until the view fits; running agents always stay.
     """
     now = time.time() if now is None else now
+    sessions = _ordered(sessions)
     hidden, hidden_count = _plan(sessions, running_only, max_lines)
-
     rows = _tree_rows(sessions, running_only, hidden)
 
+    labels = {id(a): (sessions[i].title + (f" [{sessions[i].kind}]"
+                                           if sessions[i].kind not in (None, "interactive")
+                                           else "")
+                      if a is sessions[i].main else a.label)
+              for i, _, a in rows}
     models = {id(a): model_text(a) for _, _, a in rows}
-    contexts = {id(a): f"{fmt_tokens(a.context_tokens):>5} {share_text(a) or '  -'}"
-                for _, _, a in rows}
-    model_w = min(max([len(HEADER[1]), *map(len, models.values())]), MAX_MODEL)
-    context_w = max([len(HEADER[2]), *map(len, contexts.values())])
-    status_w = max([len(HEADER[4]), *(len(a.status or a.state) for _, _, a in rows)])
-    columns_w = model_w + context_w + 7 + status_w + 4 * 2
-    label_w = min(max((len(p) + len(a.label) for _, p, a in rows), default=0), MAX_LABEL)
+    # One model for everything says nothing per row: name it once, in the header.
+    show_model = len(set(models.values())) > 1
+    summary = _summary(sessions, None if show_model or not models
+                       else next(iter(models.values())))
+    times = {id(a): _time_text(a, a is sessions[i].main, now) for i, _, a in rows}
+
+    model_w = min(max([len(MODEL_HEADER), *map(len, models.values())]), MAX_MODEL)
+    time_w = max([len(TIME_HEADER), *map(len, times.values())])
+    status_w = max([len(STATUS_HEADER), *(len(a.status or a.state) for _, _, a in rows)])
+    columns_w = (model_w + 2 if show_model else 0) + CONTEXT_W + time_w + status_w + 3 * 2
+    label_w = min(max([len(summary), *(len(p) + 2 + len(labels[id(a)]) for _, p, a in rows)]),
+                  MAX_LABEL)
     if width:
         label_w = max(min(label_w, width - columns_w - 2), MIN_LABEL)
 
-    def cells(label: str, model: str, context: str, elapsed_: str) -> str:
-        model = _cut(model, model_w)
-        return f"{label:<{label_w}}  {model:<{model_w}}  {context:<{context_w}}  {elapsed_:>7}"
+    def line(prefix: str, a: Agent, colored: bool) -> str:
+        label = _cut(labels[id(a)], max(label_w - len(prefix) - 2, 4))
+        icon = style(colored, STATE_COLORS.get(a.state, "37"), ICONS.get(a.state, "?"))
+        pad = " " * (label_w - len(prefix) - 2 - len(label))
+        if a.state in (BLOCKED, RUNNING):
+            label = style(colored, "1", label)
+        status = a.status or a.state
+        cells = [prefix + icon + " " + label + pad]
+        if show_model:
+            cells.append(f"{_cut(models[id(a)], model_w):<{model_w}}")
+        cells += [_context_cell(a, colored), f"{times[id(a)]:>{time_w}}",
+                  style(colored, STATE_COLORS.get(a.state, "37"), f"{status:<{status_w}}")]
+        return "  ".join(cells)
+
+    head = [f"{_cut(summary, label_w):<{label_w}}"]
+    if show_model:
+        head.append(f"{MODEL_HEADER:<{model_w}}")
+    head += [f"{CONTEXT_HEADER:<{CONTEXT_W}}", f"{TIME_HEADER:>{time_w}}", STATUS_HEADER]
 
     out: list[str] = []
     keys: list[Key | None] = []
 
-    def emit(line: str, key: Key | None = None) -> None:
-        out.append(line.rstrip())
+    def emit(text: str, key: Key | None = None) -> None:
+        out.append(text.rstrip())
         keys.append(key)
 
-    emit(style(color, "7", (cells(*HEADER[:4]) + "  " + HEADER[4]).ljust(width or 0)))
+    emit(style(color, "7", "  ".join(head).ljust(width or 0)))
     for k, (i, prefix, a) in enumerate(rows):
         s = sessions[i]
-        if a is s.main:
-            if i:
-                emit("")
-            emit(style(color, "1", s.title) + style(color, "90", f"  [{s.id[:8]}]")
-                 + (style(color, "34", f"  {s.cwd}") if s.cwd else "")
-                 + (style(color, "90", f"  {s.kind}") if s.kind else ""))
+        if a is s.main and (i == 0 or (sessions[i - 1].cwd or "") != (s.cwd or "")):
+            emit(style(color, "1;34", _project(s.cwd)))
         key = (s.id, a.id)
-        room = max(label_w - len(prefix), 4)
-        label = a.label if len(a.label) <= room else a.label[:room - 1] + "…"
-        line = cells(prefix + label, models[id(a)], contexts[id(a)],
-                     fmt_duration(elapsed(a, now)))
-        status = a.status or a.state
         if key == selected:
-            emit(style(color, SELECTED, (line + f"  {status:<{status_w}}")
-                 .ljust(width or 0)),
-                 key)
+            emit(style(color, SELECTED, line(prefix, a, False).ljust(width or 0)), key)
         else:
-            if a is s.main:
-                line = style(color, "1", label) + line[len(label):]
-            emit(line + "  " + style(color, STATE_COLORS.get(a.state, "37"),
-                                      f"{status:<{status_w}}"), key)
-        # Note lines go right after the last row of the session.
-        if k == len(rows) - 1 or rows[k + 1][0] != i:
-            if hidden_count[i]:
-                emit(style(color, "90", f"  … {hidden_count[i]} older finished agents hidden"))
-            elif not s.agents:
-                emit(style(color, "90", "  (no subagents)"))
-            elif a is s.main:
-                emit(style(color, "90", "  (no running subagents)"))
+            emit(line(prefix, a, color), key)
+        # The note goes right after the last row of the session.
+        if (k == len(rows) - 1 or rows[k + 1][0] != i) and hidden_count[i]:
+            emit(style(color, "90", f"   … {hidden_count[i]} older finished agents hidden"))
     return out, keys
 
 
@@ -237,6 +310,9 @@ def render_detail(session: Session, a: Agent, *, now: float | None = None,
         context += f" ({share_text(a)})"
     out.append(" · ".join([state_text(color, a), model_text(a), f"context {context}",
                            f"elapsed {fmt_duration(elapsed(a, now))}"]))
+    # The tree shows a session by title alone: where it runs and its id live here.
+    out.append(style(color, "90", " · ".join(
+        [*([_home(session.cwd)] if session.cwd else []), f"session {session.id}"])))
     if not d:
         return out
     out.append(style(color, "90", f"{d.requests} requests · {fmt_tokens(d.output_tokens)} "

@@ -19,9 +19,8 @@ def test_prints_tree_and_exits_zero(fake, capsys):
     assert main(["abc123", "--color", "never"]) == 0
 
     out = capsys.readouterr().out.splitlines()
-    assert out[0].split()[0] == "AGENT"
-    assert out[1].startswith("abc123  [abc123]")
-    assert out[-1].strip() == "(no subagents)"
+    assert out[0].startswith("– 1 inactive") and "CONTEXT" in out[0]
+    assert out[-1].startswith(" – abc123 ") and out[-1].endswith("not running")
 
 
 def test_nothing_found_prints_reason_and_exits_one(fake, capsys):
@@ -37,7 +36,7 @@ def test_window_option_reaches_every_agent(fake, capsys):
 
     main(["abc123", "--color", "never", "--window", "200000"])
 
-    assert "50 % of 200k" in capsys.readouterr().out
+    assert "━━━━────  50%" in capsys.readouterr().out
 
 
 def test_transcript_text_is_sanitised_before_printing(fake, capsys):

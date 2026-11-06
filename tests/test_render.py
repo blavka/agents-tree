@@ -3,17 +3,20 @@ import re
 import pytest
 from conftest import NOW, agent, session
 
+from agents_tree.model import BLOCKED, RUNNING, WAITING
 from agents_tree.render import fmt_duration, fmt_tokens, fmt_window, render, render_lines
 
 
-def model_columns(text):
-    """Column where each row's model text starts."""
-    return {m.start() for line in text.splitlines()
-            if (m := re.search(r"(opus|haiku)-", line))}
+BAR = re.compile("[━─]{8}")  # the context bar, not the tree's '└─'
 
 
 def tree_rows(text):
-    return [line for line in text.splitlines() if re.match(r"[│ ]*[├└]─", line)]
+    return [line for line in text.splitlines() if re.match(r"\s*[│ ]*[├└]─", line)]
+
+
+def label_of(row):
+    """The tree part of a row: prefix, icon and label, without the columns."""
+    return re.split(r"\s{2,}[━─]", row)[0].rstrip()
 
 
 def test_rows_line_up_across_depths_and_sessions():
@@ -22,49 +25,108 @@ def test_rows_line_up_across_depths_and_sessions():
         session([agent("x")], sid="s2"),
     ], now=NOW)
 
-    assert len(model_columns(text)) == 1
+    bars = {m.start() for line in text.splitlines()[1:] if (m := BAR.search(line))}
+    assert len(bars) == 1
 
 
-def test_row_shows_model_effort_context_elapsed_and_status():
+def test_session_is_one_row_under_its_directory():
+    lines = render([session([])], now=NOW).splitlines()
+
+    assert lines[1] == "app"
+    assert lines[2].startswith(" ● Work ")
+    assert len(lines) == 3  # no 'main' row, no '(no subagents)' note
+
+
+def test_row_shows_context_bar_time_and_status():
     text = render([session([agent("Explore: look", ctx=250_000)])], now=NOW)
 
     row = next(line for line in text.splitlines() if "Explore" in line)
-    assert "opus-5-5 (high)" in row
-    assert "250k 25 % of 1M" in row
+    assert "━━──────  25%" in row
     assert "1m00s" in row
     assert row.endswith("completed")
+
+
+def test_context_without_a_window_shows_tokens():
+    text = render([session([agent("a", ctx=42_000, window=None)])], now=NOW)
+
+    assert re.search(r"\s42k\s", next(line for line in tree_rows(text)))
+
+
+def test_one_model_is_named_once_in_the_header():
+    head, *rows = render([session([agent("a")])], now=NOW).splitlines()
+
+    assert "opus-5-5 (high)" in head
+    assert not any("opus" in row for row in rows)
+
+
+def test_mixed_models_get_a_column():
+    text = render([session([agent("g", model="haiku-4-5", effort=None)])], now=NOW)
+
+    head = text.splitlines()[0]
+    row = next(line for line in tree_rows(text))
+    assert "MODEL (EFFORT)" in head
+    assert "haiku-4-5 " in row and "(" not in row
+    assert head.index("MODEL") == row.index("haiku")
 
 
 def test_running_agent_elapsed_counts_up_to_now():
     text = render([session([agent("busy", status="running", started=NOW - 90)])], now=NOW)
 
-    assert "1m30s" in next(line for line in text.splitlines() if line.startswith("└─ busy"))
+    assert "1m30s" in next(line for line in tree_rows(text) if "busy" in line)
 
 
-def test_effort_is_omitted_for_models_without_it():
-    text = render([session([agent("g", model="haiku-4-5", effort=None)])], now=NOW)
+def test_waiting_session_shows_how_long_ago_it_last_worked():
+    s = session([])
+    s.main.state, s.main.status, s.main.ended = WAITING, "idle", NOW - 7200
 
-    row = next(line for line in text.splitlines() if line.startswith("└─ g"))
-    assert "haiku-4-5 " in row and "(" not in row
+    assert "2h00m ago" in render([s], now=NOW)
 
 
 def test_tree_glyphs_mark_last_children():
     text = render([session([agent("a", children=[agent("a1"), agent("a2")]), agent("b")])],
                   now=NOW)
 
-    labels = [re.split(r"\s{2,}opus", line)[0] for line in tree_rows(text)]
-    assert labels == ["├─ a", "│  ├─ a1", "│  └─ a2", "└─ b"]
+    assert [label_of(row) for row in tree_rows(text)] == [
+        "   ├─ ✓ a", "   │  ├─ ✓ a1", "   │  └─ ✓ a2", "   └─ ✓ b"]
 
 
-def test_header_names_the_columns_and_lines_up_with_them():
-    text = render([session([agent("Explore: look")])], now=NOW)
+def test_header_counts_sessions_by_state_and_names_the_columns():
+    waiting = session([], sid="s2")
+    waiting.main.state, waiting.main.status = WAITING, "idle"
+    text = render([session([agent("Explore: look")]), waiting], now=NOW)
 
     head, *rows = text.splitlines()
-    assert head.split() == ["AGENT", "MODEL", "(EFFORT)", "CONTEXT", "ELAPSED", "STATUS"]
+    assert head.startswith("● 1 running  ○ 1 waiting")
     row = next(line for line in rows if "Explore" in line)
-    assert head.index("MODEL") == row.index("opus-5-5")
-    assert head.index("ELAPSED") + len("ELAPSED") == row.index("1m00s") + len("1m00s")
+    assert (m := BAR.search(row)) and head.index("CONTEXT") == m.start()
+    assert head.index("TIME") + len("TIME") == row.index("1m00s") + len("1m00s")
     assert head.index("STATUS") == row.index("completed")
+
+
+def test_sessions_needing_a_person_come_first_then_working_ones():
+    def main_in(state, sid, cwd):
+        s = session([], sid=sid, title=sid)
+        s.main.state, s.main.status, s.cwd = state, state, cwd
+        return s
+
+    text = render([main_in(WAITING, "idle-a", "/w/a"), main_in(RUNNING, "busy-b", "/w/b"),
+                   main_in(BLOCKED, "asks-c", "/w/c"), main_in(WAITING, "idle-b", "/w/b")],
+                  now=NOW)
+
+    shape = [m.group(1) if (m := re.match(r" \S (\S+)", line)) else line
+             for line in text.splitlines()[1:]]
+    assert shape == ["c", "asks-c", "b", "busy-b", "idle-b", "a", "idle-a"]
+
+
+def test_a_running_subagent_makes_an_idle_session_count_as_working():
+    idle = session([agent("kid", status="running", started=NOW)], sid="s2", title="Idle")
+    idle.main.state, idle.main.status, idle.cwd = WAITING, "idle", "/w/x"
+    other = session([], title="Other")
+    other.main.state, other.main.status = WAITING, "idle"
+
+    lines = render([other, idle], now=NOW).splitlines()
+
+    assert lines[1] == "x"
 
 
 def test_rows_without_context_keep_columns_aligned():
@@ -86,18 +148,14 @@ def test_running_only_keeps_running_agents_and_their_parents():
                                                       agent("kid-done")])]
     text = render([session(tree)], now=NOW, running_only=True)
 
-    labels = [row.split()[1] for row in tree_rows(text)]
+    labels = [row.split()[2] for row in tree_rows(text)]
     assert labels == ["parent", "kid"]
 
 
-def test_running_only_without_running_agents_says_so():
-    text = render([session([agent("done")])], now=NOW, running_only=True)
+def test_running_only_without_running_agents_leaves_the_session_row():
+    lines = render([session([agent("done")])], now=NOW, running_only=True).splitlines()
 
-    assert text.splitlines()[-1].strip() == "(no running subagents)"
-
-
-def test_session_without_subagents_says_so():
-    assert render([session([])], now=NOW).splitlines()[-1].strip() == "(no subagents)"
+    assert lines[-1].startswith(" ● Work")
 
 
 def test_fit_hides_oldest_finished_agents_first_and_never_running_ones():
@@ -107,7 +165,7 @@ def test_fit_hides_oldest_finished_agents_first_and_never_running_ones():
     lines = render([session(tree)], now=NOW, max_lines=6).splitlines()
 
     assert len(lines) <= 6
-    assert [line.split()[1] for line in tree_rows("\n".join(lines))] == ["busy", "new"]
+    assert [line.split()[2] for line in tree_rows("\n".join(lines))] == ["busy", "new"]
     assert lines[-1].strip() == "… 2 older finished agents hidden"
 
 
@@ -168,6 +226,7 @@ def test_fmt_window():
 
 
 @pytest.mark.parametrize(("secs", "out"), [(None, "-"), (-1, "-"), (5, "5s"), (65, "1m05s"),
-                                           (3 * 3600 + 120, "3h02m")])
+                                           (3 * 3600 + 120, "3h02m"),
+                                           (86400 + 5 * 3600 + 59, "1d05h")])
 def test_fmt_duration(secs, out):
     assert fmt_duration(secs) == out
