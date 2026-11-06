@@ -129,6 +129,44 @@ def test_a_running_subagent_makes_an_idle_session_count_as_working():
     assert lines[1] == "x"
 
 
+def test_session_rows_show_the_short_session_id_in_its_own_column():
+    text = render([session([agent("a")], sid="0123456789abcdef")], now=NOW)
+
+    head, _, session_row, subagent_row = text.splitlines()
+    at = head.index("ID")
+    assert session_row[at:at + 8] == "01234567" and "0123456789" not in session_row
+    assert subagent_row[at:at + 8].strip() == ""
+
+
+def test_a_type_every_subagent_shares_is_left_out():
+    text = render([session([agent("general-purpose: one",
+                                  children=[agent("general-purpose: nested")]),
+                            agent("general-purpose: two")])], now=NOW)
+
+    assert [label_of(row) for row in tree_rows(text)] == [
+        "   ├─ ✓ one", "   │  └─ ✓ nested", "   └─ ✓ two"]
+
+
+def test_types_stay_when_they_differ_or_there_is_one_subagent():
+    mixed = render([session([agent("general-purpose: one"), agent("Explore: two")])], now=NOW)
+    single = render([session([agent("web-fetch: page")])], now=NOW)
+
+    assert "general-purpose: one" in mixed and "Explore: two" in mixed
+    assert "web-fetch: page" in single
+
+
+def test_a_narrow_view_drops_the_model_column_before_cutting_labels():
+    def text(width):
+        return render([session([agent("a long enough label to need the room",
+                                      model="haiku-4-5", effort=None), agent("b")])],
+                      now=NOW, width=width)
+
+    assert "MODEL" in text(140).splitlines()[0]
+    narrow = text(90)
+    assert "MODEL" not in narrow.splitlines()[0] and "haiku" not in narrow
+    assert "a long enough label to need the room" in narrow
+
+
 def test_rows_without_context_keep_columns_aligned():
     text = render([session([agent("a", ctx=None), agent("b")])], now=NOW)
 

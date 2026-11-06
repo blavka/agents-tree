@@ -7,6 +7,7 @@ fitting to a height decide which rows to draw, and the data stays as loaded.
 from __future__ import annotations
 
 import os
+import re
 import textwrap
 import time
 
@@ -16,8 +17,10 @@ from agents_tree.model import (BLOCKED, DONE, FAILED, INACTIVE, RUNNING, STALE, 
 MAX_LABEL = 70
 MIN_LABEL = 16
 MAX_MODEL = 28
-MODEL_HEADER, CONTEXT_HEADER, TIME_HEADER, STATUS_HEADER = (
-    "MODEL (EFFORT)", "CONTEXT", "TIME", "STATUS")
+ID_HEADER, MODEL_HEADER, CONTEXT_HEADER, TIME_HEADER, STATUS_HEADER = (
+    "ID", "MODEL (EFFORT)", "CONTEXT", "TIME", "STATUS")
+ID_W = 8  # a session id prefix: enough to pass as a target
+_TYPE_RE = re.compile(r"[\w.-]+: ")  # 'agent-type: ' leading a subagent label
 BAR = 8  # context bar cells
 CONTEXT_W = BAR + 5  # the bar, a space, and '100%'
 NO_DIR = "(no directory)"
@@ -200,6 +203,17 @@ def _time_text(a: Agent, is_main: bool, now: float) -> str:
     return fmt_duration(elapsed(a, now))
 
 
+def _shared_type(s: Session) -> str | None:
+    """The 'agent-type: ' every subagent of the session starts with, if they all do.
+    Said on every row it is noise; one subagent keeps it, as there is nothing to compare."""
+    subagents = [a for top in s.agents for a in top.walk()]
+    if len(subagents) < 2:
+        return None
+    m = _TYPE_RE.match(subagents[0].label)
+    prefix = m.group(0) if m else None
+    return prefix if prefix and all(a.label.startswith(prefix) for a in subagents) else None
+
+
 def _project(cwd: str | None) -> str:
     return os.path.basename(cwd.rstrip(os.sep)) or cwd if cwd else NO_DIR
 
@@ -224,10 +238,11 @@ def render_lines(sessions: list[Session], *, now: float | None = None,
     hidden, hidden_count = _plan(sessions, running_only, max_lines)
     rows = _tree_rows(sessions, running_only, hidden)
 
+    shared = [_shared_type(s) for s in sessions]
     labels = {id(a): (sessions[i].title + (f" [{sessions[i].kind}]"
                                            if sessions[i].kind not in (None, "interactive")
                                            else "")
-                      if a is sessions[i].main else a.label)
+                      if a is sessions[i].main else a.label[len(shared[i] or ""):])
               for i, _, a in rows}
     models = {id(a): model_text(a) for _, _, a in rows}
     # One model for everything says nothing per row: name it once, in the header.
@@ -239,27 +254,33 @@ def render_lines(sessions: list[Session], *, now: float | None = None,
     model_w = min(max([len(MODEL_HEADER), *map(len, models.values())]), MAX_MODEL)
     time_w = max([len(TIME_HEADER), *map(len, times.values())])
     status_w = max([len(STATUS_HEADER), *(len(a.status or a.state) for _, _, a in rows)])
-    columns_w = (model_w + 2 if show_model else 0) + CONTEXT_W + time_w + status_w + 3 * 2
+    columns_w = ID_W + CONTEXT_W + time_w + status_w + 4 * 2
     label_w = min(max([len(summary), *(len(p) + 2 + len(labels[id(a)]) for _, p, a in rows)]),
                   MAX_LABEL)
+    # Short of room, names matter more than models: the detail page still has them.
+    if width and show_model and label_w + model_w + 2 + columns_w + 2 > width:
+        show_model = False
+    if show_model:
+        columns_w += model_w + 2
     if width:
         label_w = max(min(label_w, width - columns_w - 2), MIN_LABEL)
 
-    def line(prefix: str, a: Agent, colored: bool) -> str:
+    def line(prefix: str, a: Agent, s: Session, colored: bool) -> str:
         label = _cut(labels[id(a)], max(label_w - len(prefix) - 2, 4))
         icon = style(colored, STATE_COLORS.get(a.state, "37"), ICONS.get(a.state, "?"))
         pad = " " * (label_w - len(prefix) - 2 - len(label))
         if a.state in (BLOCKED, RUNNING):
             label = style(colored, "1", label)
         status = a.status or a.state
-        cells = [prefix + icon + " " + label + pad]
+        cells = [prefix + icon + " " + label + pad,
+                 style(colored, "90", f"{s.id[:ID_W]:<{ID_W}}") if a is s.main else " " * ID_W]
         if show_model:
             cells.append(f"{_cut(models[id(a)], model_w):<{model_w}}")
         cells += [_context_cell(a, colored), f"{times[id(a)]:>{time_w}}",
                   style(colored, STATE_COLORS.get(a.state, "37"), f"{status:<{status_w}}")]
         return "  ".join(cells)
 
-    head = [f"{_cut(summary, label_w):<{label_w}}"]
+    head = [f"{_cut(summary, label_w):<{label_w}}", f"{ID_HEADER:<{ID_W}}"]
     if show_model:
         head.append(f"{MODEL_HEADER:<{model_w}}")
     head += [f"{CONTEXT_HEADER:<{CONTEXT_W}}", f"{TIME_HEADER:>{time_w}}", STATUS_HEADER]
@@ -278,9 +299,9 @@ def render_lines(sessions: list[Session], *, now: float | None = None,
             emit(style(color, "1;34", _project(s.cwd)))
         key = (s.id, a.id)
         if key == selected:
-            emit(style(color, SELECTED, line(prefix, a, False).ljust(width or 0)), key)
+            emit(style(color, SELECTED, line(prefix, a, s, False).ljust(width or 0)), key)
         else:
-            emit(line(prefix, a, color), key)
+            emit(line(prefix, a, s, color), key)
         # The note goes right after the last row of the session.
         if (k == len(rows) - 1 or rows[k + 1][0] != i) and hidden_count[i]:
             emit(style(color, "90", f"   … {hidden_count[i]} older finished agents hidden"))
