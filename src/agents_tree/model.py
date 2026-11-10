@@ -69,6 +69,8 @@ class Session:
     agents: list[Agent] = field(default_factory=list)
     cwd: str | None = None
     kind: str | None = None  # interactive / background
+    # The session's own process, when the provider knows it for sure: what -k signals.
+    pid: int | None = None
 
     def all_agents(self):
         yield self.main
