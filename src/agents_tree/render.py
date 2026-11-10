@@ -309,46 +309,107 @@ def find_agent(sessions: list[Session], key: Key) -> tuple[Session, Agent] | Non
     return None
 
 
+# A span is the visible columns (1-based, inclusive) that copy one value.
+Span = tuple[int, int, str, str]  # start, end, what it is, the text to copy
+
+
 def render_detail(session: Session, a: Agent, *, now: float | None = None,
                   color: bool = False, width: int = 100) -> list[str]:
     """The detail view of one agent: everything it is, as wrapped lines."""
+    return [text for text, _ in detail_lines(session, a, now=now, color=color, width=width)]
+
+
+def detail_lines(session: Session, a: Agent, *, now: float | None = None,
+                 color: bool = False, width: int = 100) -> list[tuple[str, list[Span]]]:
+    """Detail lines and, per line, the values a double-click there copies."""
     now = time.time() if now is None else now
     d = a.detail
-    out = [style(color, "1", f"{session.title} › {a.label}")]
+    # The " › " is its own piece, so the join adds nothing between pieces.
+    title, title_spans = _pieces([
+        (session.title, "name", session.title), (" › ", None, None),
+        (a.label, "name", a.label)], sep="")
+    out = [(style(color, "1", title), title_spans)]
 
     context = fmt_tokens(a.context_tokens)
     if share_text(a):
         context += f" ({share_text(a)})"
-    out.append(" · ".join([state_text(color, a), model_text(a), f"context {context}",
-                           f"elapsed {fmt_duration(elapsed(a, now))}"]))
+    out.append((" · ".join([state_text(color, a), model_text(a), f"context {context}",
+                            f"elapsed {fmt_duration(elapsed(a, now))}"]), []))
     # The tree shows a session by title alone: where it runs and its id live here.
-    out.append(style(color, "90", " · ".join(
-        [*([_home(session.cwd)] if session.cwd else []), f"session {session.id}"])))
+    where: list[tuple[str, str | None, str | None]] = []
+    if session.cwd:
+        where.append((_home(session.cwd), "path", session.cwd))
+    where.append((f"session {session.id}", "session id", session.id))
+    plain, spans = _pieces(where)
+    out.append((style(color, "90", plain), spans))
     if not d:
         return out
-    out.append(style(color, "90", f"{d.requests} requests · {fmt_tokens(d.output_tokens)} "
-                                  f"output tokens · id {a.id}"))
+    plain, spans = _pieces([
+        (f"{d.requests} requests", None, None),
+        (f"{fmt_tokens(d.output_tokens)} output tokens", None, None),
+        (f"id {a.id}", "id", a.id)])
+    out.append((style(color, "90", plain), spans))
     if d.transcript:
-        out.append(style(color, "90", _home(d.transcript)))
+        shown = _home(d.transcript)
+        out.append((style(color, "90", shown), [(1, len(shown), "path", d.transcript)]))
     if d.agent_name:
-        out += ["", style(color, "1", "Agent name"), *_wrap(d.agent_name, width)]
+        out += _block(color, "Agent name", d.agent_name, "name", d.agent_name, width)
     if d.tools:
         counts = ", ".join(f"{name} ×{n}" for name, n in
                            sorted(d.tools.items(), key=lambda kv: (-kv[1], kv[0])))
-        out += ["", style(color, "1", f"Tools ({sum(d.tools.values())} calls)"),
-                *_wrap(counts, width)]
+        out += _block(color, f"Tools ({sum(d.tools.values())} calls)", counts,
+                      "tools", counts, width)
         if d.last_tool:
             last = f"last: {d.last_tool}"
             if d.last_tool_at:
                 last += f", {fmt_duration(now - d.last_tool_at)} ago"
             if d.last_tool_pending:
                 last += style(color, "1;33", " · waiting for its result")
-            out.append("  " + last)
+            out.append(("  " + last, []))
     if d.prompt:
-        out += ["", style(color, "1", d.prompt_label), *_wrap(d.prompt, width)]
+        out += _block(color, d.prompt_label, d.prompt, "prompt", d.prompt, width)
     if d.last_text:
-        out += ["", style(color, "1", "Last message"), *_wrap(d.last_text, width)]
+        out += _block(color, "Last message", d.last_text, "message", d.last_text, width)
     return out
+
+
+def span_at(spans: list[Span], column: int | None) -> tuple[str, str] | None:
+    """The value under a 1-based column; the last one on the line when column is unknown."""
+    if not spans:
+        return None
+    if column is None:
+        return spans[-1][2], spans[-1][3]
+    for start, end, kind, payload in spans:
+        if start <= column <= end:
+            return kind, payload
+    return None
+
+
+def _pieces(parts: list[tuple[str, str | None, str | None]],
+            sep: str = " · ") -> tuple[str, list[Span]]:
+    """Join pieces. A piece with a kind is a double-click target covering its columns."""
+    text: list[str] = []
+    spans: list[Span] = []
+    column = 1
+    for i, (piece, kind, payload) in enumerate(parts):
+        if i:
+            text.append(sep)
+            column += len(sep)
+        text.append(piece)
+        if kind is not None and payload:
+            spans.append((column, column + len(piece) - 1, kind, payload))
+        column += len(piece)
+    return "".join(text), spans
+
+
+def _block(color: bool, title: str, body: str, kind: str, payload: str,
+           width: int) -> list[tuple[str, list[Span]]]:
+    """A blank line, a heading and the wrapped body. The heading and body copy `payload`."""
+    rows: list[tuple[str, list[Span]]] = [
+        ("", []), (style(color, "1", title), [(1, len(title), kind, payload)])]
+    for line in _wrap(body, width):
+        rows.append((line, [(1, len(line), kind, payload)] if line.strip() else []))
+    return rows
 
 
 def _wrap(text: str, width: int) -> list[str]:

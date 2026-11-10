@@ -1,10 +1,14 @@
+import base64
 import re
+import subprocess
+import time
 
 import pytest
 from conftest import NOW, agent, session
 
-from agents_tree.live import View, draw, handle, parse_keys
+from agents_tree.live import View, copy_text, draw, handle, parse_keys
 from agents_tree.model import Detail
+from agents_tree.render import detail_lines, span_at
 
 
 @pytest.mark.parametrize(("data", "events"), [
@@ -13,7 +17,7 @@ from agents_tree.model import Detail
     ("\x1b[A\x1b[B", ["up", "down"]), ("\x1bOA", ["up"]), ("jk", ["down", "up"]),
     ("\r", ["open"]), ("\x1b[C", ["open"]), ("\x1b[D", ["back"]),
     ("\x1b[5~\x1b[6~", ["pgup", "pgdn"]), ("\x1b[H\x1b[F", ["home", "end"]),
-    ("\x1b[<0;12;7M", [("click", 7)]), ("\x1b[<0;12;7m", []),
+    ("\x1b[<0;12;7M", [("click", 7, 12)]), ("\x1b[<0;12;7m", []),
     ("\x1b[<35;12;7M", [("hover", 7)]),
     ("\x1b[<64;1;1M\x1b[<65;1;1M", ["up", "down"]),
     ("\x1b[B\x1b", ["down", "back"]), ("x\x1b[99Z", []),
@@ -208,3 +212,119 @@ def test_error_is_shown_instead_of_the_tree():
 
 def test_first_frame_says_it_is_loading():
     assert _drawn(View(), None, rows=5)[0] == "loading…"
+
+
+def test_detail_lines_mark_the_name_the_ids_and_the_path():
+    shown = _sessions()[0]
+    lines = detail_lines(shown, shown.agents[0], now=NOW, width=80)
+    title, spans = lines[0]
+
+    assert title == "Work › Explore: look"
+    assert span_at(spans, 1) == ("name", "Work")
+    assert span_at(spans, title.index("›") + 1) is None
+    assert span_at(spans, title.index("Explore: look") + 1) == ("name", "Explore: look")
+    where = next(row for row in lines if row[0].startswith("/w/app"))
+    assert span_at(where[1], 1) == ("path", "/w/app")
+    assert span_at(where[1], where[0].index("s1") + 1) == ("session id", "s1")
+    ident = next(row for row in lines if "requests" in row[0])
+    assert span_at(ident[1], ident[0].index("id ") + 1) == ("id", "Explore: look")
+    colored, colored_spans = detail_lines(shown, shown.agents[0], now=NOW, width=80,
+                                          color=True)[0]
+    assert colored_spans == spans
+    assert "Work › Explore: look" in colored
+
+
+def _arm(monkeypatch):
+    copied = []
+    monkeypatch.setattr("agents_tree.live.copy_text", lambda text: copied.append(text) or True)
+    view = View(selected=("s1", "Explore: look"), detail=True)
+    return copied, view, _drawn(view, _sessions(), rows=40)
+
+
+def _click(view, screen, needle, column, at):
+    line = next(row for row in screen if needle in row)
+    handle(view, ("click", screen.index(line) + 1, column(line)), now=at)
+
+
+def test_double_click_copies_the_name_or_the_id(monkeypatch):
+    copied, view, screen = _arm(monkeypatch)
+
+    _click(view, screen, "Work ›", lambda line: line.index("Explore: look") + 1, 10)
+    _click(view, screen, "Work ›", lambda line: line.index("Explore: look") + 1, 10.2)
+    _click(view, screen, "Work ›", lambda line: 1, 10.3)  # a third click starts over
+
+    assert copied == ["Explore: look"]
+    assert view.flash == "copied name"
+    _click(view, screen, "session s1", lambda line: line.index("s1") + 1, 12)
+    _click(view, screen, "session s1", lambda line: line.index("s1") + 1, 12.2)
+    assert copied[-1] == "s1" and view.flash == "copied session id"
+    _click(view, screen, "id Explore: look", lambda line: line.index("id ") + 1, 14)
+    _click(view, screen, "id Explore: look", lambda line: line.index("id ") + 1, 14.2)
+    assert copied[-1] == "Explore: look" and view.flash == "copied id"
+
+
+def test_double_click_between_values_copies_nothing(monkeypatch):
+    copied, view, screen = _arm(monkeypatch)
+
+    _click(view, screen, "Work ›", lambda line: line.index("›") + 1, 10)
+    _click(view, screen, "Work ›", lambda line: line.index("›") + 1, 10.2)
+
+    assert not copied and view.flash is None and view.detail
+
+
+def test_a_failed_copy_is_reported(monkeypatch):
+    monkeypatch.setattr("agents_tree.live.copy_text", lambda _text: False)
+    view = View(selected=("s1", "Explore: look"), detail=True)
+    screen = _drawn(view, _sessions(), rows=40)
+    line = next(row for row in screen if row.startswith("Work ›"))
+    y = screen.index(line) + 1
+
+    handle(view, ("click", y, 1), now=1)
+    handle(view, ("click", y, 1), now=1.2)
+
+    assert view.flash == "copy failed" and view.detail
+
+
+def test_a_slow_second_click_does_not_copy(monkeypatch):
+    copied, view, screen = _arm(monkeypatch)
+    line = next(row for row in screen if row.startswith("Work ›"))
+    y, x = screen.index(line) + 1, 1
+
+    handle(view, ("click", y, x), now=10)
+    handle(view, ("click", y, x), now=10.6)
+
+    assert not copied
+    assert view.pointer_row == y - 1
+
+
+def test_the_footer_confirms_a_copy_then_returns_to_the_hint():
+    view = View(selected=("s1", "Explore: look"), detail=True, flash="copied id",
+                flash_until=time.monotonic() + 30)
+
+    assert "copied id" in _drawn(view, _sessions(), rows=12)[-1]
+
+    view.flash_until = time.monotonic() - 1
+    footer = _drawn(view, _sessions(), rows=12)[-1]
+    assert "double-click copies" in footer
+    assert "copied id" not in footer
+
+
+def test_copy_text_writes_osc52_and_calls_wl_copy(monkeypatch, capsys):
+    calls = []
+
+    def which(name):
+        return "/usr/bin/wl-copy" if name == "wl-copy" else None
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs.get("input"), kwargs.get("timeout")))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setattr("agents_tree.live.shutil.which", which)
+    monkeypatch.setattr("agents_tree.live.subprocess.run", fake_run)
+
+    assert copy_text("Explore: look")
+
+    payload = base64.b64encode(b"Explore: look").decode("ascii")
+    assert capsys.readouterr().out == f"\033]52;c;{payload}\a"
+    assert calls == [(["wl-copy"], b"Explore: look", 2)]

@@ -2,7 +2,8 @@
 
 Keys: ↑/↓ (j/k, the wheel, the pointer) select, Enter (→, l, a click) opens the detail, Esc
 (←, h, q) goes back, q quits from the tree, r toggles running-only, and f
-shows or folds older finished agents.
+shows or folds older finished agents. In the detail, a double-click copies the
+name, the session id, the agent id or the path under the pointer.
 
 Data loads on a background thread every `interval` seconds, so keys never wait
 for a refresh.
@@ -10,24 +11,27 @@ for a refresh.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import os
 import re
 import select
 import shutil
 import signal
+import subprocess
 import sys
 import termios
 import threading
-import tty
 import time
+import tty
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from agents_tree.model import Session
-from agents_tree.render import Key, find_agent, render_detail, render_lines, style
+from agents_tree.render import (Key, Span, detail_lines, find_agent, render_lines, span_at,
+                                style)
 
-Event = str | tuple[str, int]
+Event = str | tuple[str, int] | tuple[str, int, int]
 
 _TOKEN_RE = re.compile(
     r"\x1b\[<(\d+);(\d+);(\d+)([Mm])"  # SGR mouse: button;x;y, press M / release m
@@ -40,16 +44,18 @@ _CHARS = {"k": "up", "j": "down", "l": "open", "\r": "open", "\n": "open", "h": 
           "g": "home", "G": "end", " ": "pgdn", "q": "q", "Q": "q", "\x03": "quit",
           "r": "toggle", "R": "toggle", "f": "fold", "F": "fold", "\x1b": "back"}
 _FAR = 10**9
+_DOUBLE_CLICK = 0.4  # a third click starts over, so a triple does not copy twice
+_COPIED_FOR = 1.5
 
 
 def parse_keys(data: str) -> list[Event]:
     """Terminal input to events, in order. Unknown keys and sequences are dropped."""
     events: list[Event] = []
     for m in _TOKEN_RE.finditer(data):
-        button, _, y, press, params, final, ss3 = m.groups()
+        button, x, y, press, params, final, ss3 = m.groups()
         if button is not None:
             if press == "M" and button == "0":
-                events.append(("click", int(y)))
+                events.append(("click", int(y), int(x)))
             elif press == "M" and button == "35":  # moved, no button held
                 events.append(("hover", int(y)))
             elif button in ("64", "65"):
@@ -77,6 +83,13 @@ class View:
     # agent row of the tree in order (for moving the selection), and the page height.
     screen_keys: list[Key | None] = field(default_factory=list)
     row_keys: list[Key] = field(default_factory=list)
+    # Detail only: per screen row, the values a double-click copies. Aligned with
+    # the drawn lines, including the blank pad and the footer.
+    line_spans: list[list[Span]] = field(default_factory=list)
+    pointer_row: int = -1
+    pointer_at: float = 0.0
+    flash: str | None = None
+    flash_until: float = 0.0
     page: int = 1
 
 
@@ -85,8 +98,11 @@ def _step(view: View, event: Event) -> int | None:
             "home": -_FAR, "end": _FAR}.get(event) if isinstance(event, str) else None
 
 
-def handle(view: View, event: Event) -> bool:
-    """Apply one event. Returns False when the view should close."""
+def handle(view: View, event: Event, *, now: float | None = None) -> bool:
+    """Apply one event. Returns False when the view should close.
+
+    `now` is the monotonic clock used for the double-click. Tests pass it.
+    """
     if event == "quit":
         return False
     if event == "toggle":
@@ -100,7 +116,9 @@ def handle(view: View, event: Event) -> bool:
         if step is not None:
             view.scroll = max(view.scroll + step, 0)  # draw() clamps the end
         elif event in ("back", "q"):
-            view.detail, view.scroll = False, 0
+            _leave_detail(view)
+        elif isinstance(event, tuple) and event[0] == "click":
+            _copy_double_click(view, event, time.monotonic() if now is None else now)
         return True
 
     if event == "q":
@@ -112,10 +130,10 @@ def handle(view: View, event: Event) -> bool:
         if key:
             view.selected = key
             if event[0] == "click":
-                view.detail, view.scroll = True, 0
+                _open_detail(view)
     elif event == "open":
         if view.selected:
-            view.detail, view.scroll = True, 0
+            _open_detail(view)
     elif event == "back":
         if not view.selected:
             return False
@@ -129,25 +147,99 @@ def handle(view: View, event: Event) -> bool:
     return True
 
 
+def _open_detail(view: View) -> None:
+    view.detail, view.scroll, view.pointer_row = True, 0, -1
+
+
+def _leave_detail(view: View) -> None:
+    view.detail, view.scroll, view.pointer_row, view.flash = False, 0, -1, None
+
+
+def _copy_double_click(view: View, event: tuple, now: float) -> None:
+    """A second click on the same detail row copies the value under the pointer."""
+    row = int(event[1]) - 1
+    column = int(event[2]) if len(event) > 2 else None
+    if view.pointer_row != row or now - view.pointer_at > _DOUBLE_CLICK:
+        view.pointer_row, view.pointer_at = row, now
+        return
+    view.pointer_row = -1
+    if not 0 <= row < len(view.line_spans):
+        return
+    hit = span_at(view.line_spans[row], column)
+    if hit is None or not hit[1]:
+        return
+    kind, payload = hit
+    view.flash = f"copied {kind}" if copy_text(payload) else "copy failed"
+    view.flash_until = now + _COPIED_FOR
+
+
+def copy_text(text: str) -> bool:
+    """Copy text via OSC 52 and, when one is installed, a desktop clipboard tool."""
+    if not text:
+        return False
+    encoded = base64.b64encode(text.encode()).decode("ascii")
+    try:
+        sys.stdout.write(f"\033]52;c;{encoded}\a")
+        sys.stdout.flush()
+        wrote = True
+    except OSError:
+        wrote = False
+    argv = _clipboard_argv()
+    if argv is None:
+        return wrote
+    try:
+        done = subprocess.run(argv, input=text.encode(), timeout=2, check=False,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return wrote
+    return wrote or done.returncode == 0
+
+
+def _clipboard_argv() -> list[str] | None:
+    """wl-copy on Wayland, otherwise xclip, xsel, or wl-copy wherever it is."""
+    if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-copy"):
+        return ["wl-copy"]
+    if shutil.which("xclip"):
+        return ["xclip", "-selection", "clipboard"]
+    if shutil.which("xsel"):
+        return ["xsel", "--clipboard", "--input"]
+    if shutil.which("wl-copy"):
+        return ["wl-copy"]
+    return None
+
+
+def _detail_frame(view: View, sessions: list[Session], *, cols: int, room: int,
+                  color: bool, now: float | None) -> tuple[list[str], list[list[Span]], int, str]:
+    """The visible detail lines, the spans on those lines, how many are below, the hint."""
+    found = find_agent(sessions, view.selected) if view.selected else None
+    if found:
+        content = detail_lines(*found, now=now, color=color, width=cols)
+    else:
+        content = [(style(color, "90", "This agent is no longer listed."), [])]
+    view.scroll = min(view.scroll, max(len(content) - room, 0))
+    shown = content[view.scroll:view.scroll + room]
+    body = [text for text, _spans in shown]
+    spans = [row_spans for _text, row_spans in shown]
+    more = len(content) - view.scroll - len(body)
+    hint = "↑↓ scroll · double-click copies · esc back · q quit"
+    return body, spans, more, hint
+
+
 def draw(view: View, sessions: list[Session] | None, error: str | None, *, cols: int,
          rows: int, interval: float, color: bool, now: float | None = None) -> list[str]:
     """The whole screen: body lines, then the footer on the last line."""
     room = max(rows - 1, 1)
     view.page = max(room - 2, 1)
     keys: list[Key | None] = []
+    spans: list[list[Span]] = []
     more = 0
     if sessions is None:
         body, hint = [style(color, "90", "loading…")], "q quit"
     elif error:
         body, hint = [style(color, "90", error)], "q quit"
     elif view.detail and view.selected:
-        found = find_agent(sessions, view.selected)
-        content = (render_detail(*found, now=now, color=color, width=cols) if found
-                   else [style(color, "90", "This agent is no longer listed.")])
-        view.scroll = min(view.scroll, max(len(content) - room, 0))
-        body = content[view.scroll:view.scroll + room]
-        more = len(content) - view.scroll - len(body)
-        hint = "↑↓ scroll · esc back · q quit"
+        body, spans, more, hint = _detail_frame(view, sessions, cols=cols, room=room,
+                                                color=color, now=now)
     else:
         lines, line_keys = render_lines(sessions, now=now, running_only=view.running_only,
                                         color=color, width=cols,
@@ -169,7 +261,10 @@ def draw(view: View, sessions: list[Session] | None, error: str | None, *, cols:
         folding = "show hidden" if view.fold_finished else "fold finished"
         hint = f"↑↓ select · enter detail · r {toggle} · f {folding} · q quit"
     view.screen_keys = keys
-    if more > 0:
+    view.line_spans = spans + [[] for _ in range(max(room - len(spans), 0) + 1)]
+    if view.detail and view.flash and time.monotonic() < view.flash_until:
+        hint = view.flash
+    elif more > 0:
         hint += f" · {more} more lines"
     footer = style(color, "90", f"agents-tree · {hint} · every {interval:g}s · "
                                 + time.strftime("%H:%M:%S"))

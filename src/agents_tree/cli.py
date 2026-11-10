@@ -26,7 +26,7 @@ targets:
 
 live view keys: ↑/↓, j/k or the pointer select, enter or a click shows the agent's detail,
   esc goes back, r toggles running-only, f shows or folds older finished agents,
-  q quits
+  q quits. In the detail, double-click the name or the id to copy it.
 
 Reads local transcripts only. Run it in its own terminal (or the herdr plugin):
 started with `!` inside an agent, its output lands in that agent's context.
