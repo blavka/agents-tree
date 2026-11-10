@@ -286,7 +286,7 @@ def render_lines(sessions: list[Session], *, now: float | None = None,
     for k, (i, prefix, a) in enumerate(rows):
         s = sessions[i]
         if a is s.main and (i == 0 or (sessions[i - 1].cwd or "") != (s.cwd or "")):
-            emit(style(color, "1;34", _project(s.cwd)))
+            emit(style(color, "36", _project(s.cwd)))
         key = (s.id, a.id)
         if key == selected:
             emit(style(color, SELECTED, line(prefix, a, s, False).ljust(width or 0)), key)

@@ -12,6 +12,8 @@ In a terminal, `agents-tree .` (shown here with fictional demo data):
 In [herdr](https://herdr.dev), open the same tree as a live overlay over the
 active pane with `prefix+a`.
 
+![The demo tree in a herdr overlay](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/tree.png)
+
 It reads the transcripts Antigravity CLI (agy), Claude Code, Codex and Grok Build keep on disk and never talks
 to a session, so nothing it prints ends up in an agent's context. It has no
 dependencies beyond Python 3.10.
