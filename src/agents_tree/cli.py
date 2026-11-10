@@ -6,6 +6,7 @@ import argparse
 import os
 import signal
 import sys
+from pathlib import Path
 from collections.abc import Callable
 
 from agents_tree import __version__, live
@@ -19,10 +20,11 @@ DESCRIPTION = "Show coding-agent sessions and their subagents as a tree: " \
 EPILOG = """\
 targets:
   (none)        every running session on this machine
+  -s            the running sessions of the current directory, its parents or subfolders
   DIR           sessions running in DIR ("." works); if none, DIR's newest session
   SESSION-ID    one session (a unique prefix is enough)
 
-live view keys: ↑/↓ or j/k select, enter or a click shows the agent's detail,
+live view keys: ↑/↓, j/k or the pointer select, enter or a click shows the agent's detail,
   esc goes back, r toggles running-only, f shows or folds older finished agents,
   q quits
 
@@ -59,6 +61,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap.add_argument("-w", "--watch", action="store_true", help="live view, like top")
     ap.add_argument("-n", "--interval", type=float, default=2.0, metavar="SECONDS",
                     help="live view refresh interval (default 2)")
+    ap.add_argument("-s", "--session", action="store_true",
+                    help="only the sessions of the current directory: run in it, above it "
+                         "(you are in a subfolder of their project) or below it")
     ap.add_argument("-r", "--running", action="store_true",
                     help="only running subagents (and their parents)")
     ap.add_argument("--json", action="store_true",
@@ -74,6 +79,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     args = ap.parse_args(argv)
     if args.interval <= 0:
         ap.error("--interval must be positive")
+    if args.session and args.target:
+        ap.error("-s/--session cannot be used with a target")
     if args.json and args.watch:
         ap.error("--json cannot be used with --watch")
     return args
@@ -81,13 +88,30 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 def loader(args: argparse.Namespace) -> Callable[[], list[Session]]:
     """Sessions as the views get them: sanitised once, with --window applied."""
+    here = Path.cwd().resolve() if args.session else None
+
     def load() -> list[Session]:
         sessions = _sessions(args.provider, args.target)
+        if here:
+            sessions = [s for s in sessions if _related(s.cwd, here)]
+            if not sessions:
+                raise LookupError(f"no running sessions in {here}")
         sanitize(sessions)
         override_window(sessions, args.window)
         return sessions
 
     return load
+
+
+def _related(cwd: str | None, here: Path) -> bool:
+    """A session run in `here`, in a folder that contains it, or in one below it."""
+    if not cwd:
+        return False
+    try:
+        d = Path(cwd).resolve()
+    except (OSError, ValueError):
+        return False
+    return d == here or d in here.parents or here in d.parents
 
 
 def _sessions(provider: str, target: str | None) -> list[Session]:

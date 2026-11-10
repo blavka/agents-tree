@@ -5,13 +5,14 @@ coding-agent sessions and their nested subagents as a tree. It shows Antigravity
 CLI (agy), Claude Code, Codex and Grok Build with each agent's model and effort,
 context use, elapsed time and status.
 
-In a terminal, `agents-tree .`:
+In a terminal, `agents-tree .` (shown here with fictional demo data):
 
-![agents-tree run in a demo project: a session and its five subagents, one nested](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/cli.png)
+![A compact tree showing two demo sessions and their subagents](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/cli.png)
 
-As a live overlay in [herdr](https://herdr.dev), one key away (`prefix+a`):
+In [herdr](https://herdr.dev), open the same tree as a live overlay over the
+active pane with `prefix+a`.
 
-![The same tree as a live overlay in herdr](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/tree.png)
+![The demo tree in a herdr overlay](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/tree.png)
 
 It reads the transcripts Antigravity CLI (agy), Claude Code, Codex and Grok Build keep on disk and never talks
 to a session, so nothing it prints ends up in an agent's context. It has no
@@ -46,6 +47,7 @@ agents-tree .               # sessions running in this directory (or its newest 
 agents-tree ~/src/api       # same, for another directory
 agents-tree 1a2b3c4d        # one session, by id or a unique prefix (an ambiguous one lists the matches)
 agents-tree -r              # only running subagents and their parents
+agents-tree -s              # only the sessions of this directory (or its project, from a subfolder)
 agents-tree -w              # live view like top, refreshed every 2 s (-n 5 for 5 s)
 agents-tree --json .        # one schema-versioned JSON document for scripts
 agents-tree --provider agy   # Antigravity CLI sessions
@@ -61,7 +63,7 @@ In the live view:
 
 | Key | Does |
 | --- | --- |
-| `↑` `↓` / `j` `k` / wheel | select an agent |
+| `↑` `↓` / `j` `k` / wheel / pointer | select an agent (hovering a row highlights it) |
 | `Enter` / `→` / click | open its detail: the prompt it was given, its tool calls (and the one it is waiting on), its last message, request and token counts, transcript path |
 | `Esc` / `←` / `q` | back to the tree (in the tree: clear the selection, then quit) |
 | `PgUp` `PgDn` `Home` `End` | scroll the detail, or jump through the tree |
@@ -69,7 +71,7 @@ In the live view:
 | `f` | show or fold older finished agents that were hidden to fit the screen |
 | `Ctrl+C` | quit |
 
-The live view takes the mouse for clicks and the wheel; most terminals still
+The live view takes the mouse for clicks, hovering and the wheel; most terminals still
 select text with Shift held, or start it with `--no-mouse`. When the tree is
 taller than the terminal, the oldest finished agents are folded into a
 "… N older finished agents hidden" line; press `f` to expand them and scroll
@@ -79,13 +81,21 @@ through the full tree.
 
 ![Detail of a running subagent: its prompt, tool calls and the command it waits on](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/detail.png)
 
+The summary counts sessions by state (`▲ blocked`, `● running`, `○ waiting`,
+`– inactive`). Sessions
+are grouped under their directory's name, the ones waiting on a person first, then
+the working ones; each session is one row, its subagents below it.
+
 | Column | Meaning |
 | --- | --- |
-| label | `agent-type: description` as the spawning agent gave it; `main` for the session itself |
-| model (effort) | model of the agent's latest request, and its effort level (models without effort show none) |
-| context | tokens in the latest request (input + cache + output), and that as a share of the context window |
-| elapsed | first to last transcript entry; up to now while the agent runs |
-| status | subagents: `running` (active in the last 2 minutes, or waiting on a tool call), `completed` / `failed` (as Claude Code reported), `done` (finished, no outcome recorded), `idle` (a teammate waiting for its next message), `stale` (no sign of life and no completion marker); `main`: the session's own state, or `not running` |
+| label | state icon, then the session's title, or `agent-type: description` as the spawning agent gave it (the `agent-type: ` is left out when every subagent of the session shares it) |
+| id | the session id's first 8 characters: pass it as the target (`agents-tree -w 1a2b3c4d`) to watch that session alone |
+| model (effort) | model of the agent's latest request, and its effort level (models without effort show none); always shown, even when rows share a model |
+| context | tokens in the latest request (input + cache + output) as a bar and a share of the context window; tokens alone when the window is unknown |
+| time | subagents and working sessions: first to last transcript entry, up to now while running; other sessions: how long ago they last did anything (`3h05m ago`) |
+| status | subagents: `running` (active in the last 2 minutes, or waiting on a tool call), `completed` / `failed` (as Claude Code reported), `done` (finished, no outcome recorded), `idle` (a teammate waiting for its next message), `stale` (no sign of life and no completion marker); sessions: their own state, or `not running` |
+
+`Enter` on a session row shows its directory and full id.
 
 ### Caveats
 

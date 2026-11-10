@@ -14,6 +14,7 @@ from agents_tree.model import Detail
     ("\r", ["open"]), ("\x1b[C", ["open"]), ("\x1b[D", ["back"]),
     ("\x1b[5~\x1b[6~", ["pgup", "pgdn"]), ("\x1b[H\x1b[F", ["home", "end"]),
     ("\x1b[<0;12;7M", [("click", 7)]), ("\x1b[<0;12;7m", []),
+    ("\x1b[<35;12;7M", [("hover", 7)]),
     ("\x1b[<64;1;1M\x1b[<65;1;1M", ["up", "down"]),
     ("\x1b[B\x1b", ["down", "back"]), ("x\x1b[99Z", []),
 ])
@@ -73,6 +74,36 @@ def test_click_opens_the_detail_of_the_row_under_the_pointer():
     assert view.detail and view.selected == ("s1", "Explore: look")
 
 
+def test_hover_selects_the_row_under_the_pointer_without_opening_it():
+    view, sessions = View(), _sessions()
+    screen = _drawn(view, sessions)
+    y = next(n for n, line in enumerate(screen, 1) if "Plan: think" in line)
+
+    handle(view, ("hover", y))
+
+    assert view.selected == ("s1", "Plan: think") and not view.detail
+    hovered = _drawn(view, sessions, color=True)
+    assert next(line for line in hovered if "Plan: think" in line).startswith("\033[30;46m")
+
+
+def test_hover_off_a_row_keeps_the_selection():
+    view = View(selected=("s1", "Plan: think"))
+    _drawn(view, _sessions())
+
+    handle(view, ("hover", 1))  # the header
+
+    assert view.selected == ("s1", "Plan: think")
+
+
+def test_hover_in_the_detail_changes_nothing():
+    view = View(selected=("s1", "Plan: think"), detail=True)
+    _drawn(view, _sessions())
+
+    handle(view, ("hover", 3))
+
+    assert view.detail and view.selected == ("s1", "Plan: think")
+
+
 def test_click_on_the_header_does_nothing():
     view = View()
     _drawn(view, _sessions())
@@ -91,7 +122,7 @@ def test_tree_taller_than_the_screen_scrolls_to_keep_the_selection_visible():
         handle(view, "down")
     screen = _drawn(view, sessions, rows=10)
 
-    assert screen[0].startswith("AGENT")  # the header stays put
+    assert "CONTEXT" in screen[0]  # the header stays put
     assert any(f"r{23}" in line for line in screen[1:-1])
     assert "more lines" in screen[-1]
 
@@ -120,6 +151,7 @@ def test_detail_shows_prompt_tools_and_last_message():
     assert "4 requests · 1k output tokens" in text
     assert "Tools (8 calls)" in text and "Bash ×5, Read ×3" in text
     assert "last: Bash, 30s ago · waiting for its result" in text
+    assert "/w/app · session s1" in text
     assert re.search(r"Prompt\n  Find the parser.\n  Then report.", text)
     assert "Last message\n  Found it in parse.py." in text
 
