@@ -3,7 +3,7 @@
 Unit tests use fake transcripts. This is how to see agents-tree on a real agent
 run without touching anyone's real work: a throwaway project, a real agent CLI
 in it, a task that fans out into subagents, and agents-tree pointed at that
-directory only. It is also how the screenshots in the README were made.
+directory only. The README screenshots show rendered fictional demo data.
 
 It costs real model usage (a few minutes of five subagents), so it is a manual
 check, not part of CI.

@@ -5,13 +5,12 @@ coding-agent sessions and their nested subagents as a tree. It shows Antigravity
 CLI (agy), Claude Code, Codex and Grok Build with each agent's model and effort,
 context use, elapsed time and status.
 
-In a terminal, `agents-tree .`:
+In a terminal, `agents-tree .` (shown here with fictional demo data):
 
-![agents-tree run in a demo project: a session and its five subagents, one nested](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/cli.png)
+![A compact tree showing two demo sessions and their subagents](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/cli.png)
 
-As a live overlay in [herdr](https://herdr.dev), one key away (`prefix+a`):
-
-![The same tree as a live overlay in herdr](https://raw.githubusercontent.com/blavka/agents-tree/main/docs/tree.png)
+In [herdr](https://herdr.dev), open the same tree as a live overlay over the
+active pane with `prefix+a`.
 
 It reads the transcripts Antigravity CLI (agy), Claude Code, Codex and Grok Build keep on disk and never talks
 to a session, so nothing it prints ends up in an agent's context. It has no
