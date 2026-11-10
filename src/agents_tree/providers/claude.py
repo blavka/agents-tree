@@ -270,8 +270,11 @@ def _result_text(block: dict) -> str:
 # --- finding sessions -------------------------------------------------------
 
 def _live_row(r: dict, status) -> dict:
-    return {"sessionId": r["sessionId"], "cwd": r.get("cwd"), "kind": r.get("kind"),
-            "status": status, "name": r.get("name")}
+    row = {"sessionId": r["sessionId"], "cwd": r.get("cwd"), "kind": r.get("kind"),
+           "status": status, "name": r.get("name")}
+    if r.get("parkedJobId"):
+        row["parkedJobId"] = r["parkedJobId"]
+    return row
 
 
 def _live_rank(row: dict) -> tuple[int, bool, bool]:
@@ -329,6 +332,11 @@ def _query_live() -> list[dict]:
             return _live_rows(rows)
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
         pass
+    return _registered_sessions()
+
+
+def _registered_sessions() -> list[dict]:
+    """Sessions whose local Claude registration belongs to a live process."""
     rows = []
     for f in (CLAUDE_DIR / "sessions").glob("*.json"):
         try:
@@ -424,7 +432,22 @@ def find(target: str | None) -> Found:
 
     path = transcript_path(target)
     if not path:
-        raise LookupError(f"no Claude Code session matching '{target}' (and no such directory)")
+        # Claude registers a new interactive session before its first transcript
+        # exists, and `claude agents --json` can omit it during that interval.
+        live = next((s for s in _registered_sessions() if s["sessionId"] == target), None)
+        cwd = live.get("cwd") if live else None
+        if not isinstance(cwd, str) or not cwd:
+            raise LookupError(f"no Claude Code session matching '{target}' (and no such directory)")
+        parked = live.get("parkedJobId") if live else None
+        if isinstance(parked, str) and parked:
+            matches = [s for s in live_sessions()
+                       if s.get("kind") == "background" and s["sessionId"].startswith(parked)
+                       and _same_dir(s.get("cwd"), Path(cwd).resolve())]
+            if len(matches) == 1:
+                found = _live_found(matches)
+                if found:
+                    return found
+        return [(project_dir(cwd) / f"{target}.jsonl", live, cwd)]
     live = next((s for s in live_sessions() if s["sessionId"] == path.stem), None)
     return [(path, live, live.get("cwd") if live else None)]
 
@@ -440,7 +463,7 @@ def _agent_from(aid: str, label: str, t: Transcript, state: str, status: str | N
         tools=dict(t.tool_counts), last_tool=t.last_tool, last_tool_at=t.last_tool_at,
         last_tool_pending=bool(t.last_tool_id and t.last_tool_id not in t.tool_results),
         last_text=t.last_text, output_tokens=sum(t.outputs.values()), requests=len(t.outputs),
-        transcript=str(transcript),
+        transcript=str(transcript) if transcript.exists() else None,
     )
     return Agent(
         id=aid, label=label, state=state, status=status, model=short_model(t.model),

@@ -242,6 +242,37 @@ def test_find_unknown_session_raises(fake):
         claude.find("nope")
 
 
+def test_registered_session_without_transcript_is_shown_and_updates(fake, monkeypatch):
+    live = {"sessionId": "new-session", "cwd": "/w/app", "kind": "interactive",
+            "status": "idle"}
+    monkeypatch.setattr(claude, "_registered_sessions", lambda: [live])
+
+    initial = claude.sessions("new-session")[0]
+    assert (initial.id, initial.cwd, initial.main.state) == ("new-session", "/w/app", WAITING)
+    assert initial.main.detail is not None and initial.main.detail.transcript is None
+
+    fake.session("new-session", "/w/app", [title("First task"), assistant(0)])
+    fake.live = [live]
+    updated = claude.sessions("new-session")[0]
+    assert updated.title == "First task"
+    assert updated.main.model == "opus-5-5"
+
+
+def test_registered_session_shows_its_parked_background_job(fake, monkeypatch):
+    live = {"sessionId": "interactive-id", "cwd": "/w/app", "kind": "interactive",
+            "status": "idle", "parkedJobId": "background"}
+    monkeypatch.setattr(claude, "_registered_sessions", lambda: [live])
+    fake.session("background-123", "/w/app", [title("Review code"), assistant(0)])
+    fake.live = [{"sessionId": "background-123", "cwd": "/w/app", "kind": "background",
+                  "status": "done"}]
+
+    session = claude.sessions("interactive-id")[0]
+
+    assert session.id == "background-123"
+    assert session.title == "Review code"
+    assert (session.main.model, session.main.state) == ("opus-5-5", DONE)
+
+
 def test_transcript_is_found_in_the_sessions_own_project_without_a_search(fake, monkeypatch):
     path = fake.session("s1", "/w/a", [assistant(0)])
     monkeypatch.setattr(claude.glob, "escape", lambda _: pytest.fail("searched"))
