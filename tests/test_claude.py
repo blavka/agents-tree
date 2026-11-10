@@ -288,6 +288,33 @@ def test_load_takes_cwd_kind_and_status_from_the_live_entry(fake):
     assert (s.cwd, s.kind, s.main.status) == ("/w/a", "background", "working")
 
 
+def test_load_takes_the_process_from_the_live_entry(fake):
+    path = fake.session("s1", "/w/a", [assistant(0)])
+
+    s = claude.load(path, {"sessionId": "s1", "kind": "interactive", "status": "idle",
+                           "pid": 42}, "/w/a")
+
+    assert s.pid == 42
+
+
+@pytest.mark.parametrize("pid", [None, 0, -1, True, "42"])
+def test_live_rows_keep_only_a_real_pid(pid):
+    [row] = claude._live_rows([{"sessionId": "s1", "kind": "interactive", "pid": pid}])
+
+    assert "pid" not in row
+
+
+def test_registered_sessions_do_not_hand_out_their_pid(tmp_path, monkeypatch):
+    (tmp_path / "sessions").mkdir()
+    (tmp_path / "sessions" / "1.json").write_text(json.dumps(
+        {"pid": os.getpid(), "sessionId": "s1", "kind": "interactive", "status": "idle"}))
+    monkeypatch.setattr(claude, "CLAUDE_DIR", tmp_path)
+
+    [row] = claude._registered_sessions()
+
+    assert row["sessionId"] == "s1" and "pid" not in row
+
+
 @pytest.mark.parametrize(("model", "window"), [
     ("claude-opus-5-5", 1_000_000), ("claude-sonnet-5-5", 1_000_000),
     ("claude-fable-5-1", 1_000_000), ("claude-haiku-4-5-20251001", 200_000),
@@ -318,7 +345,7 @@ def test_live_rows_deduplicate_a_resumed_session():
 
     assert claude._live_rows(rows) == [
         {"sessionId": "s1", "cwd": None, "kind": "interactive", "status": "busy",
-         "name": None},
+         "name": None, "pid": 42},
         {"sessionId": "s2", "cwd": None, "kind": "background", "status": "idle", "name": None},
     ]
 

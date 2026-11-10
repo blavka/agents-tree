@@ -194,3 +194,191 @@ def test_session_flag_and_a_target_do_not_mix(capsys):
         parse_args(["-s", "abc123"])
 
     assert "--session cannot be used with a target" in capsys.readouterr().err
+
+
+DAY = 86400
+
+
+def _waiting(sid: str, state: str, idle_secs: float | None, now: float,
+             pid: int | None = None) -> Session:
+    ended = None if idle_secs is None else now - idle_secs
+    return Session(id=sid, title=sid, main=Agent(id="main", label="main", state=state,
+                                                  ended=ended), pid=pid)
+
+
+@pytest.fixture
+def idle(monkeypatch):
+    """Sessions waiting, blocked, working and not running, for various times."""
+    now = 1_000_000_000.0
+    sessions = [_waiting("waiting-5d", "waiting", 5 * DAY, now),
+                _waiting("blocked-19d", "blocked", 19 * DAY, now),
+                _waiting("waiting-1h", "waiting", 3600, now),
+                _waiting("running", "running", None, now),
+                _waiting("inactive-30d", "inactive", 30 * DAY, now)]
+    monkeypatch.setattr(cli, "_sessions", lambda provider, target: sessions)
+    monkeypatch.setattr(cli.time, "time", lambda: now)
+
+
+def test_idle_flag_keeps_live_sessions_waiting_at_least_that_long(idle):
+    assert [s.id for s in cli.loader(parse_args(["-i", "3d"]))()] == [
+        "waiting-5d", "blocked-19d"]
+
+
+def test_idle_flag_takes_combined_units(idle):
+    assert [s.id for s in cli.loader(parse_args(["--idle", "0d30m"]))()] == [
+        "waiting-5d", "blocked-19d", "waiting-1h"]
+
+
+def test_idle_flag_with_nothing_that_old_says_so(idle):
+    with pytest.raises(LookupError, match="^no sessions idle for that long"):
+        cli.loader(parse_args(["-i", "60d"]))()
+
+
+@pytest.mark.parametrize("value", ["3", "d", "3days", "3d ago", "0s", "-1d"])
+def test_idle_flag_rejects_what_is_not_a_duration(value, capsys):
+    with pytest.raises(SystemExit):
+        parse_args(["-i", value])
+
+    assert "--idle" in capsys.readouterr().err
+
+
+NOW = 1_000_000_000.0
+
+
+@pytest.fixture
+def closing(monkeypatch):
+    """Idle sessions to close: one with a known process, one background job without,
+    one too recent. os.kill plays a process table: SIGTERM ends a process unless it is
+    in `stubborn`, signal 0 tells whether it still runs."""
+    state = {"calls": 0, "sessions": [
+        _waiting("idle-5d", "waiting", 5 * DAY, NOW, pid=101),
+        _waiting("job-19d", "blocked", 19 * DAY, NOW),
+        _waiting("idle-1h", "waiting", 3600, NOW, pid=103),
+        _waiting("other-6d", "waiting", 6 * DAY, NOW, pid=104)]}
+    killed: list[tuple[int, int]] = []
+    alive, stubborn = {101, 103, 104}, set()
+
+    def sessions(provider, target):
+        state["calls"] += 1
+        return state["sessions"]
+
+    def kill(pid, sig):
+        if pid not in alive:
+            raise ProcessLookupError
+        if sig:
+            killed.append((pid, sig))
+            if pid not in stubborn:
+                alive.discard(pid)
+
+    monkeypatch.setattr(cli, "_sessions", sessions)
+    monkeypatch.setattr(cli.time, "time", lambda: NOW)
+    monkeypatch.setattr(cli.os, "kill", kill)
+    monkeypatch.setattr(cli, "EXIT_WAIT_SECS", 0)
+    state.update(killed=killed, alive=alive, stubborn=stubborn)
+    return state
+
+
+def _answer(monkeypatch, text):
+    monkeypatch.setattr("builtins.input", lambda prompt: text)
+
+
+def test_kill_closes_the_idle_sessions_with_a_known_process_after_yes(closing, monkeypatch,
+                                                                       capsys):
+    _answer(monkeypatch, "y")
+
+    assert main(["-ki", "3d", "--color", "never"]) == 0
+
+    assert closing["killed"] == [(101, cli.signal.SIGTERM), (104, cli.signal.SIGTERM)]
+    out = capsys.readouterr().out
+    assert "job-19d job-19d: its process is not known" in out
+    assert "closed 2 of 2" in out
+
+
+@pytest.mark.parametrize("answer", ["", "n", "no", "sí"])
+def test_kill_closes_nothing_without_a_yes(closing, monkeypatch, answer):
+    _answer(monkeypatch, answer)
+
+    assert main(["-i", "3d", "-k", "--color", "never"]) == 1
+
+    assert not closing["killed"]
+
+
+def test_kill_closes_nothing_when_there_is_no_one_to_ask(closing, monkeypatch):
+    def eof(prompt):
+        raise EOFError
+    monkeypatch.setattr("builtins.input", eof)
+
+    assert main(["-ki", "3d", "--color", "never"]) == 1
+
+    assert not closing["killed"]
+
+
+def test_kill_leaves_open_a_session_that_got_busy_while_asking(closing, monkeypatch, capsys):
+    def answer_while_one_wakes_up(prompt):
+        closing["sessions"][0] = _waiting("idle-5d", "running", None, NOW, pid=101)
+        return "y"
+    monkeypatch.setattr("builtins.input", answer_while_one_wakes_up)
+
+    main(["-ki", "3d", "--color", "never"])
+
+    assert closing["killed"] == [(104, cli.signal.SIGTERM)]
+    assert "idle-5d idle-5d: active again, left open" in capsys.readouterr().out
+
+
+def test_kill_goes_on_when_a_process_is_already_gone(closing, monkeypatch, capsys):
+    _answer(monkeypatch, "y")
+    closing["alive"].discard(101)
+
+    main(["-ki", "3d", "--color", "never"])
+
+    assert closing["killed"] == [(104, cli.signal.SIGTERM)]
+    out = capsys.readouterr().out
+    assert "idle-5d idle-5d: already gone" in out and "closed 1 of 2" in out
+
+
+@pytest.mark.parametrize(("argv", "error"), [
+    (["-k"], "-k/--kill needs -i/--idle"),
+    (["-ki", "3d", "--json"], "cannot be used with --watch or --json"),
+    (["-ki", "3d", "-w"], "cannot be used with --watch or --json"),
+])
+def test_kill_option_misuse_is_refused(argv, error, capsys):
+    with pytest.raises(SystemExit):
+        parse_args(argv)
+
+    assert error in capsys.readouterr().err
+
+
+def _status(out: str) -> list[str]:
+    """The ids in the tree printed after closing."""
+    after = out.split("to resume later\n", 1)[1]
+    return [line.split()[1] for line in after.splitlines() if line.startswith(" ")]
+
+
+def test_kill_ends_with_every_session_left_like_a_plain_run(closing, monkeypatch, capsys):
+    _answer(monkeypatch, "y")
+
+    main(["-ki", "3d", "--color", "never"])
+
+    assert _status(capsys.readouterr().out) == ["job-19d", "idle-1h"]
+
+
+def test_kill_status_keeps_a_session_whose_process_did_not_exit(closing, monkeypatch,
+                                                                capsys):
+    _answer(monkeypatch, "y")
+    closing["stubborn"].add(104)
+
+    main(["-ki", "3d", "--color", "never"])
+
+    out = capsys.readouterr().out
+    assert "other-6d other-6d: still running, it did not take SIGTERM" in out
+    assert "closed 1 of 2" in out
+    assert _status(out) == ["job-19d", "idle-1h", "other-6d"]
+
+
+def test_kill_says_so_when_nothing_is_left(closing, monkeypatch, capsys):
+    _answer(monkeypatch, "y")
+    closing["sessions"][:] = [closing["sessions"][0]]
+
+    main(["-ki", "3d", "--color", "never"])
+
+    assert capsys.readouterr().out.rstrip().endswith("no running sessions left")

@@ -274,6 +274,9 @@ def _live_row(r: dict, status) -> dict:
            "status": status, "name": r.get("name")}
     if r.get("parkedJobId"):
         row["parkedJobId"] = r["parkedJobId"]
+    pid = r.get("pid")
+    if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+        row["pid"] = pid
     return row
 
 
@@ -348,7 +351,9 @@ def _registered_sessions() -> list[dict]:
         except (OSError, ValueError, KeyError, TypeError):
             continue
         rows.append(r)
-    return _live_rows(rows)
+    # A pid file can outlive its process and the pid be reused by another program:
+    # good enough to call a session alive, not to signal it.
+    return [{k: v for k, v in row.items() if k != "pid"} for row in _live_rows(rows)]
 
 
 def _mtime(path: Path) -> float:
@@ -565,7 +570,7 @@ def load(path: Path, live: dict | None = None, cwd: str | None = None,
     title = (main_t.custom_title or main_t.title or session_name
              or path.stem[:8])
     return Session(id=path.stem, title=title, main=main, agents=roots, cwd=cwd,
-                   kind=(live or {}).get("kind"))
+                   kind=(live or {}).get("kind"), pid=(live or {}).get("pid"))
 
 
 def _parent_without_cycle(aid: str, parent_of: dict[str, str | None],
