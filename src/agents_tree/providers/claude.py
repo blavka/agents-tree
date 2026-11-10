@@ -26,6 +26,7 @@ from pathlib import Path
 
 from agents_tree.model import (BLOCKED, DONE, FAILED, INACTIVE, RUNNING, STALE, WAITING, Agent,
                                Detail, Session)
+from agents_tree.snapshots import resolve, save
 
 CLAUDE_DIR = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
 PROJECTS = CLAUDE_DIR / "projects"
@@ -127,15 +128,18 @@ _used: set[Path] = set()
 
 
 def read_transcript(path: Path) -> Transcript:
-    """Parse a transcript, reading only what was appended since the last call."""
+    """Parse a transcript, reading only what was appended since the last call.
+
+    The offset is remembered in memory and in a disk snapshot, so a later process
+    reads the tail instead of the whole file.
+    """
     _used.add(path)
     try:
         st = path.stat()
     except OSError:
         return Transcript()
-    hit = _cache.get(path)
-    if not hit or hit.inode != st.st_ino or st.st_size < hit.offset:
-        hit = _cache[path] = _Cached(st.st_ino, 0, Transcript())
+    hit = _cache[path] = resolve(path, st, _cache.get(path), Transcript, _Cached)
+    before = hit.offset
     if st.st_size > hit.offset:
         try:
             with open(path, "rb") as f:
@@ -147,6 +151,7 @@ def read_transcript(path: Path) -> Transcript:
         for line in data[:end].splitlines():
             _read_line(hit.transcript, line.decode("utf-8", errors="replace"))
         hit.offset += end
+    save(path, hit.inode, before, hit.offset, hit.transcript)
     return hit.transcript
 
 

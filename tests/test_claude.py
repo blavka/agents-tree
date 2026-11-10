@@ -174,6 +174,29 @@ def test_a_rewritten_transcript_is_parsed_from_the_start(fake):
     assert claude.load(path).main.context_tokens == 3000
 
 
+def test_a_new_process_reuses_the_snapshot_and_reads_the_tail(fake):
+    path = fake.session("s1", "/w/app", [assistant(0, context=1000)])
+    assert claude.load(path).main.context_tokens == 1000
+
+    claude._cache.clear()  # the disk snapshot is what a later process would have
+    assert claude.load(path).main.context_tokens == 1000
+
+    with path.open("a") as handle:
+        handle.write(json.dumps(assistant(5, context=9000)) + "\n")
+    claude._cache.clear()
+    assert claude.load(path).main.context_tokens == 9000
+
+
+def test_a_rewritten_transcript_is_not_served_from_the_snapshot(fake):
+    path = fake.session("s1", "/w/app", [assistant(0, context=1000), assistant(1, context=2000)])
+    claude.load(path)
+    claude._cache.clear()
+
+    fake.session("s1", "/w/app", [assistant(0, context=3000)])
+
+    assert claude.load(path).main.context_tokens == 3000
+
+
 def test_sessions_forget_transcripts_they_no_longer_read(fake):
     old = fake.session("old", "/w/a", [assistant(0)])
     claude.read_transcript(old)

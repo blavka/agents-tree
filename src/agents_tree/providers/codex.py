@@ -26,6 +26,7 @@ from pathlib import Path
 
 from agents_tree.model import (DONE, FAILED, INACTIVE, RUNNING, STALE, WAITING, Agent,
                                Detail, Session)
+from agents_tree.snapshots import resolve, save
 
 CODEX_HOME = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
 SESSIONS = CODEX_HOME / "sessions"
@@ -246,15 +247,18 @@ def _read_line(t: Transcript, line: str) -> None:
 
 
 def read_transcript(path: Path) -> Transcript:
-    """Parse appended complete JSONL records on top of the cached transcript."""
+    """Parse appended complete JSONL records on top of the cached transcript.
+
+    The offset is remembered in memory and in a disk snapshot, so a later process
+    reads the tail instead of the whole file.
+    """
     _used.add(path)
     try:
         st = path.stat()
     except OSError:
         return Transcript()
-    hit = _cache.get(path)
-    if not hit or hit.inode != st.st_ino or st.st_size < hit.offset:
-        hit = _cache[path] = _Cached(st.st_ino, 0, Transcript())
+    hit = _cache[path] = resolve(path, st, _cache.get(path), Transcript, _Cached)
+    before = hit.offset
     if st.st_size > hit.offset:
         try:
             with open(path, "rb") as file:
@@ -266,6 +270,7 @@ def read_transcript(path: Path) -> Transcript:
         for line in data[:end].splitlines():
             _read_line(hit.transcript, line.decode("utf-8", errors="replace"))
         hit.offset += end
+    save(path, hit.inode, before, hit.offset, hit.transcript)
     return hit.transcript
 
 

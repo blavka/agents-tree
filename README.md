@@ -107,6 +107,11 @@ the working ones; each session is one row, its subagents below it.
 - **Transcript formats are internal** to each agent CLI and may change between
   releases. Unknown lines are skipped, but a field that moves makes its column
   show `-` until agents-tree is updated.
+- **Transcript cache.** A folded snapshot of each parsed transcript is kept in
+  `~/.cache/agents-tree` (`$XDG_CACHE_HOME/agents-tree`, or `$AGENTS_TREE_CACHE`)
+  so the next run reads only the lines appended since. The snapshot holds prompt
+  excerpts. A damaged snapshot is discarded and that transcript is read again.
+  Set `AGENTS_TREE_CACHE=off` to disable it.
 - **Elapsed** spans wall-clock time, so a session resumed over several days, or a
   subagent woken up again by a message, shows that whole span.
 - **Running sessions (Claude)** come from `claude agents --json`; without

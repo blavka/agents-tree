@@ -13,6 +13,7 @@ Code, Codex and Grok Build are supported. Read this before changing code.
 | `src/agents_tree/render.py` | Draws sessions as a tree and one agent as a detail page. Never changes its input. |
 | `src/agents_tree/live.py` | The `-w` live view: keys, mouse, scrolling, a loader thread. |
 | `src/agents_tree/cli.py` | Arguments, and `loader()`: provider → `sanitize()` → `--window` override. |
+| `src/agents_tree/snapshots.py` | Disk snapshots of folded transcripts, so a new process reads only the tail. |
 | `src/agents_tree/herdr.py`, `herdr/`, `herdr-plugin.toml` | The herdr plugin. It runs the source in `src/` directly, no install. |
 | `tests/` | pytest. `conftest.py` builds fake transcript trees and neutral model objects. |
 | `docs/demo/` | How to stage a throwaway demo project, run a real agent in it, and check agents-tree against it. |
@@ -69,8 +70,9 @@ keep it that way.
    (`herdr pane get <id>` → `agent`, `agent_session`) to a provider key. If the
    CLI's herdr name differs from the key, map it there.
 6. **Stay fast.** The live view reloads every 2 s on a thread. Read transcripts
-   incrementally (the Claude provider keeps a byte offset per file) and keep only
-   what the last refresh used.
+   incrementally (a byte offset per file, snapshotted in `$AGENTS_TREE_CACHE`,
+   default `~/.cache/agents-tree`) and keep only what the last refresh used.
+   Tests redirect that cache at a temp directory.
 7. **Tests:** a fake directory tree like `tests/conftest.py`'s `FakeClaude`, with
    records shaped like the real ones from step 1. Cover running, finished,
    failed, nested, a session that is not running, and malformed lines.

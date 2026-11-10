@@ -10,11 +10,20 @@ from pathlib import Path
 
 import pytest
 
+from agents_tree import snapshots
 from agents_tree.model import DONE, RUNNING, WAITING, Agent, Session
 from agents_tree.providers import antigravity, claude, codex, grok
 
 T0 = datetime(2026, 10, 7, 6, 0, 0, tzinfo=timezone.utc).timestamp()
 NOW = 10_000.0
+
+
+@pytest.fixture(autouse=True)
+def isolated_transcript_cache(tmp_path, monkeypatch):
+    """Keep folded-transcript snapshots out of the real ~/.cache."""
+    monkeypatch.setenv("AGENTS_TREE_CACHE", str(tmp_path / "transcript-cache"))
+    monkeypatch.setattr(snapshots._RootMemo, "key", None)
+    monkeypatch.setattr(snapshots._RootMemo, "path", None)
 
 
 # --- transcript records --------------------------------------------------------
