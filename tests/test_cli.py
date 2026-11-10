@@ -19,7 +19,7 @@ def test_prints_tree_and_exits_zero(fake, capsys):
     assert main(["abc123", "--color", "never"]) == 0
 
     out = capsys.readouterr().out.splitlines()
-    assert out[0].startswith("– 1 inactive") and "CONTEXT" in out[0]
+    assert "CONTEXT" in out[0] and out[1].startswith("– 1 inactive")
     assert out[-1].startswith(" – abc123 ") and out[-1].endswith("not running")
 
 

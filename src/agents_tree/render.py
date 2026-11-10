@@ -174,14 +174,14 @@ def _tree_rows(sessions: list[Session], running_only: bool,
 
 # --- the tree --------------------------------------------------------------------
 
-def _summary(sessions: list[Session], model: str | None) -> str:
+def _summary(sessions: list[Session]) -> str:
     """'▲ 1 blocked  ● 2 running  ○ 9 waiting', counting each session's own state."""
     counts: dict[str, int] = {}
     for s in sessions:
         counts[s.main.state] = counts.get(s.main.state, 0) + 1
     parts = [f"{ICONS[state]} {counts[state]} {state}" for state in SUMMARY_ORDER
              if state in counts]
-    return "  ".join(parts + ([f"· {model}"] if model else []))
+    return "  ".join(parts)
 
 
 def _context_cell(a: Agent, colored: bool) -> str:
@@ -228,14 +228,14 @@ def render_lines(sessions: list[Session], *, now: float | None = None,
                  selected: Key | None = None) -> tuple[list[str], list[Key | None]]:
     """Lines of the tree view, and for each line the agent it shows (None for others).
 
-    The first line is the header: a count of sessions by state, then the column
-    names. Sessions are grouped by directory, the ones that need attention first,
+    The first line names the columns, followed by a count of sessions by state.
+    Sessions are grouped by directory, the ones that need attention first,
     one line each, with their subagents below. With max_lines, the oldest finished
     agents are left out until the view fits; running agents always stay.
     """
     now = time.time() if now is None else now
     sessions = _ordered(sessions)
-    hidden, hidden_count = _plan(sessions, running_only, max_lines)
+    hidden, hidden_count = _plan(sessions, running_only, max_lines - 1 if max_lines else None)
     rows = _tree_rows(sessions, running_only, hidden)
 
     shared = [_shared_type(s) for s in sessions]
@@ -245,23 +245,15 @@ def render_lines(sessions: list[Session], *, now: float | None = None,
                       if a is sessions[i].main else a.label[len(shared[i] or ""):])
               for i, _, a in rows}
     models = {id(a): model_text(a) for _, _, a in rows}
-    # One model for everything says nothing per row: name it once, in the header.
-    show_model = len(set(models.values())) > 1
-    summary = _summary(sessions, None if show_model or not models
-                       else next(iter(models.values())))
+    summary = _summary(sessions)
     times = {id(a): _time_text(a, a is sessions[i].main, now) for i, _, a in rows}
 
     model_w = min(max([len(MODEL_HEADER), *map(len, models.values())]), MAX_MODEL)
     time_w = max([len(TIME_HEADER), *map(len, times.values())])
     status_w = max([len(STATUS_HEADER), *(len(a.status or a.state) for _, _, a in rows)])
-    columns_w = ID_W + CONTEXT_W + time_w + status_w + 4 * 2
-    label_w = min(max([len(summary), *(len(p) + 2 + len(labels[id(a)]) for _, p, a in rows)]),
+    columns_w = ID_W + model_w + CONTEXT_W + time_w + status_w + 5 * 2
+    label_w = min(max([len("AGENT"), *(len(p) + 2 + len(labels[id(a)]) for _, p, a in rows)]),
                   MAX_LABEL)
-    # Short of room, names matter more than models: the detail page still has them.
-    if width and show_model and label_w + model_w + 2 + columns_w + 2 > width:
-        show_model = False
-    if show_model:
-        columns_w += model_w + 2
     if width:
         label_w = max(min(label_w, width - columns_w - 2), MIN_LABEL)
 
@@ -274,15 +266,12 @@ def render_lines(sessions: list[Session], *, now: float | None = None,
         status = a.status or a.state
         cells = [prefix + icon + " " + label + pad,
                  style(colored, "90", f"{s.id[:ID_W]:<{ID_W}}") if a is s.main else " " * ID_W]
-        if show_model:
-            cells.append(f"{_cut(models[id(a)], model_w):<{model_w}}")
+        cells.append(f"{_cut(models[id(a)], model_w):<{model_w}}")
         cells += [_context_cell(a, colored), f"{times[id(a)]:>{time_w}}",
                   style(colored, STATE_COLORS.get(a.state, "37"), f"{status:<{status_w}}")]
         return "  ".join(cells)
 
-    head = [f"{_cut(summary, label_w):<{label_w}}", f"{ID_HEADER:<{ID_W}}"]
-    if show_model:
-        head.append(f"{MODEL_HEADER:<{model_w}}")
+    head = [f"{'AGENT':<{label_w}}", f"{ID_HEADER:<{ID_W}}", f"{MODEL_HEADER:<{model_w}}"]
     head += [f"{CONTEXT_HEADER:<{CONTEXT_W}}", f"{TIME_HEADER:>{time_w}}", STATUS_HEADER]
 
     out: list[str] = []
@@ -293,6 +282,7 @@ def render_lines(sessions: list[Session], *, now: float | None = None,
         keys.append(key)
 
     emit(style(color, "7", "  ".join(head).ljust(width or 0)))
+    emit(_cut(summary, width) if width else summary)
     for k, (i, prefix, a) in enumerate(rows):
         s = sessions[i]
         if a is s.main and (i == 0 or (sessions[i - 1].cwd or "") != (s.cwd or "")):

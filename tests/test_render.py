@@ -16,7 +16,7 @@ def tree_rows(text):
 
 def label_of(row):
     """The tree part of a row: prefix, icon and label, without the columns."""
-    return re.split(r"\s{2,}[━─]", row)[0].rstrip()
+    return re.split(r"\s{2,}opus-5-5", row)[0].rstrip()
 
 
 def test_rows_line_up_across_depths_and_sessions():
@@ -32,9 +32,9 @@ def test_rows_line_up_across_depths_and_sessions():
 def test_session_is_one_row_under_its_directory():
     lines = render([session([])], now=NOW).splitlines()
 
-    assert lines[1] == "app"
-    assert lines[2].startswith(" ● Work ")
-    assert len(lines) == 3  # no 'main' row, no '(no subagents)' note
+    assert lines[2] == "app"
+    assert lines[3].startswith(" ● Work ")
+    assert len(lines) == 4  # no 'main' row, no '(no subagents)' note
 
 
 def test_row_shows_context_bar_time_and_status():
@@ -52,11 +52,12 @@ def test_context_without_a_window_shows_tokens():
     assert re.search(r"\s42k\s", next(line for line in tree_rows(text)))
 
 
-def test_one_model_is_named_once_in_the_header():
-    head, *rows = render([session([agent("a")])], now=NOW).splitlines()
+def test_same_model_is_shown_on_each_agent_row():
+    lines = render([session([agent("a")])], now=NOW).splitlines()
 
-    assert "opus-5-5 (high)" in head
-    assert not any("opus" in row for row in rows)
+    assert "MODEL (EFFORT)" in lines[0]
+    assert "opus-5-5 (high)" in lines[3]
+    assert "opus-5-5 (high)" in lines[4]
 
 
 def test_mixed_models_get_a_column():
@@ -96,7 +97,7 @@ def test_header_counts_sessions_by_state_and_names_the_columns():
     text = render([session([agent("Explore: look")]), waiting], now=NOW)
 
     head, *rows = text.splitlines()
-    assert head.startswith("● 1 running  ○ 1 waiting")
+    assert rows[0] == "● 1 running  ○ 1 waiting"
     row = next(line for line in rows if "Explore" in line)
     assert (m := BAR.search(row)) and head.index("CONTEXT") == m.start()
     assert head.index("TIME") + len("TIME") == row.index("1m00s") + len("1m00s")
@@ -114,7 +115,7 @@ def test_sessions_needing_a_person_come_first_then_working_ones():
                   now=NOW)
 
     shape = [m.group(1) if (m := re.match(r" \S (\S+)", line)) else line
-             for line in text.splitlines()[1:]]
+             for line in text.splitlines()[2:]]
     assert shape == ["c", "asks-c", "b", "busy-b", "idle-b", "a", "idle-a"]
 
 
@@ -126,13 +127,13 @@ def test_a_running_subagent_makes_an_idle_session_count_as_working():
 
     lines = render([other, idle], now=NOW).splitlines()
 
-    assert lines[1] == "x"
+    assert lines[2] == "x"
 
 
 def test_session_rows_show_the_short_session_id_in_its_own_column():
     text = render([session([agent("a")], sid="0123456789abcdef")], now=NOW)
 
-    head, _, session_row, subagent_row = text.splitlines()
+    head, _, _, session_row, subagent_row = text.splitlines()
     at = head.index("ID")
     assert session_row[at:at + 8] == "01234567" and "0123456789" not in session_row
     assert subagent_row[at:at + 8].strip() == ""
@@ -155,16 +156,13 @@ def test_types_stay_when_they_differ_or_there_is_one_subagent():
     assert "web-fetch: page" in single
 
 
-def test_a_narrow_view_drops_the_model_column_before_cutting_labels():
-    def text(width):
-        return render([session([agent("a long enough label to need the room",
-                                      model="haiku-4-5", effort=None), agent("b")])],
-                      now=NOW, width=width)
+def test_narrow_view_keeps_model_column():
+    text = render([session([agent("a long enough label to need the room",
+                                  model="haiku-4-5", effort=None)])], now=NOW, width=90)
 
-    assert "MODEL" in text(140).splitlines()[0]
-    narrow = text(90)
-    assert "MODEL" not in narrow.splitlines()[0] and "haiku" not in narrow
-    assert "a long enough label to need the room" in narrow
+    assert "MODEL (EFFORT)" in text.splitlines()[0]
+    assert "haiku-4-5" in next(line for line in tree_rows(text))
+    assert all(len(line) <= 90 for line in text.splitlines())
 
 
 def test_rows_without_context_keep_columns_aligned():
@@ -200,9 +198,9 @@ def test_fit_hides_oldest_finished_agents_first_and_never_running_ones():
     tree = [agent("old", started=1), agent("busy", status="running", started=2),
             agent("mid", started=3), agent("new", started=4)]
 
-    lines = render([session(tree)], now=NOW, max_lines=6).splitlines()
+    lines = render([session(tree)], now=NOW, max_lines=7).splitlines()
 
-    assert len(lines) <= 6
+    assert len(lines) <= 7
     assert [line.split()[2] for line in tree_rows("\n".join(lines))] == ["busy", "new"]
     assert lines[-1].strip() == "… 2 older finished agents hidden"
 
@@ -210,7 +208,7 @@ def test_fit_hides_oldest_finished_agents_first_and_never_running_ones():
 def test_fit_counts_hidden_subtrees():
     tree = [agent("old", started=1, children=[agent("k1"), agent("k2")]), agent("new", started=5)]
 
-    assert "… 3 older finished agents hidden" in render([session(tree)], now=NOW, max_lines=5)
+    assert "… 3 older finished agents hidden" in render([session(tree)], now=NOW, max_lines=6)
 
 
 def test_fit_folds_finished_children_of_a_running_agent():
