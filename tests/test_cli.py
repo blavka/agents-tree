@@ -338,6 +338,7 @@ def test_kill_goes_on_when_a_process_is_already_gone(closing, monkeypatch, capsy
 
 @pytest.mark.parametrize(("argv", "error"), [
     (["-k"], "-k/--kill needs -i/--idle"),
+    (["-ki", "29s"], "idle duration of at least 30s"),
     (["-ki", "3d", "--json"], "cannot be used with --watch or --json"),
     (["-ki", "3d", "-w"], "cannot be used with --watch or --json"),
 ])
@@ -346,6 +347,14 @@ def test_kill_option_misuse_is_refused(argv, error, capsys):
         parse_args(argv)
 
     assert error in capsys.readouterr().err
+
+
+def test_kill_accepts_minimum_idle_duration():
+    assert parse_args(["-ki", "30s"]).idle == 30
+
+
+def test_idle_without_kill_accepts_shorter_duration():
+    assert parse_args(["-i", "1s"]).idle == 1
 
 
 def _status(out: str) -> list[str]:

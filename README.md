@@ -49,6 +49,7 @@ agents-tree 1a2b3c4d        # one session, by id or a unique prefix (an ambiguou
 agents-tree -r              # only running subagents and their parents
 agents-tree -s              # only the sessions of this directory (or its project, from a subfolder)
 agents-tree -i 3d           # only sessions alive but idle for 3 days or more: candidates to close
+agents-tree -ki 3d          # close eligible idle sessions after confirmation (minimum: 30s)
 agents-tree -w              # live view like top, refreshed every 2 s (-n 5 for 5 s)
 agents-tree --json .        # one schema-versioned JSON document for scripts
 agents-tree --provider agy   # Antigravity CLI sessions
@@ -121,7 +122,8 @@ the working ones; each session is one row, its subagents below it.
   last two minutes, including one of its subagent transcripts. Codex's on-disk
   files do not retain the process id for a quiet, waiting session, so such a
   session may drop out of the all-sessions view until it writes again; a
-  directory or session-id target still shows its newest saved session.
+  directory or session-id target still shows its newest saved session. The idle
+  filter cannot currently identify waiting Codex sessions.
 - **Running sessions (Antigravity CLI / agy)** are inferred from transcripts written
   in the last two minutes under `~/.gemini/antigravity-cli/brain/` (or
   `$ANTIGRAVITY_HOME`). The older `~/.gemini/antigravity/` layout remains supported.
