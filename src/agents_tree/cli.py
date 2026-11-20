@@ -90,7 +90,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                          "(3d, 12h, 1d12h): candidates to close")
     ap.add_argument("-k", "--kill", action="store_true",
                     help="with -i: close those sessions, after asking (SIGTERM; the "
-                         "transcript stays, to resume later)")
+                         "transcript stays, to resume later; minimum idle time 30s)")
     ap.add_argument("--json", action="store_true",
                     help="one JSON document for scripts (not available with --watch)")
     ap.add_argument("--window", type=_positive_int, metavar="TOKENS", default=_env_window(),
@@ -110,6 +110,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         ap.error("--json cannot be used with --watch")
     if args.kill and not args.idle:
         ap.error("-k/--kill needs -i/--idle")
+    if args.kill and args.idle < 30:
+        ap.error("-k/--kill requires an idle duration of at least 30s")
     if args.kill and (args.watch or args.json):
         ap.error("-k/--kill cannot be used with --watch or --json")
     return args
