@@ -282,6 +282,9 @@ def _live_row(r: dict, status) -> dict:
     pid = r.get("pid")
     if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
         row["pid"] = pid
+        started = r.get("startedAt")  # epoch ms
+        if isinstance(started, int) and not isinstance(started, bool) and started > 0:
+            row["pidStarted"] = started / 1000
     return row
 
 
@@ -575,7 +578,8 @@ def load(path: Path, live: dict | None = None, cwd: str | None = None,
     title = (main_t.custom_title or main_t.title or session_name
              or path.stem[:8])
     return Session(id=path.stem, title=title, main=main, agents=roots, cwd=cwd,
-                   kind=(live or {}).get("kind"), pid=(live or {}).get("pid"))
+                   kind=(live or {}).get("kind"), pid=(live or {}).get("pid"),
+                   pid_started=(live or {}).get("pidStarted"))
 
 
 def _parent_without_cycle(aid: str, parent_of: dict[str, str | None],

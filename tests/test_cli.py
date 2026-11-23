@@ -1,5 +1,6 @@
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -200,10 +201,21 @@ DAY = 86400
 
 
 def _waiting(sid: str, state: str, idle_secs: float | None, now: float,
-             pid: int | None = None) -> Session:
+             pid: int | None = None, pid_started: float | None = None) -> Session:
     ended = None if idle_secs is None else now - idle_secs
+    if pid and pid_started is None:
+        pid_started = now - 10 * DAY
     return Session(id=sid, title=sid, main=Agent(id="main", label="main", state=state,
-                                                  ended=ended), pid=pid)
+                                                  ended=ended), pid=pid,
+                   pid_started=pid_started)
+
+
+def _etime(secs: float) -> str:
+    """Elapsed time the way `ps -o etime=` prints it: [[dd-]hh:]mm:ss."""
+    s = int(secs)
+    d, s = divmod(s, DAY)
+    h, s = divmod(s, 3600)
+    return f"{d}-{h:02}:{s // 60:02}:{s % 60:02}" if d else f"{h:02}:{s // 60:02}:{s % 60:02}"
 
 
 @pytest.fixture
@@ -249,7 +261,8 @@ NOW = 1_000_000_000.0
 def closing(monkeypatch):
     """Idle sessions to close: one with a known process, one background job without,
     one too recent. os.kill plays a process table: SIGTERM ends a process unless it is
-    in `stubborn`, signal 0 tells whether it still runs."""
+    in `stubborn`, signal 0 tells whether it still runs; `ps` reads its start times
+    from `started`, which the sessions' pid_started match unless a test changes it."""
     state = {"calls": 0, "sessions": [
         _waiting("idle-5d", "waiting", 5 * DAY, NOW, pid=101),
         _waiting("job-19d", "blocked", 19 * DAY, NOW),
@@ -270,11 +283,19 @@ def closing(monkeypatch):
             if pid not in stubborn:
                 alive.discard(pid)
 
+    started = {pid: NOW - 10 * DAY for pid in alive}
+
+    def ps(cmd, **kwargs):
+        pid = int(cmd[-1])
+        out = _etime(NOW - started[pid]) + "\n" if pid in alive else ""
+        return subprocess.CompletedProcess(cmd, 0 if out else 1, out, "")
+
     monkeypatch.setattr(cli, "_sessions", sessions)
     monkeypatch.setattr(cli.time, "time", lambda: NOW)
     monkeypatch.setattr(cli.os, "kill", kill)
+    monkeypatch.setattr(cli.subprocess, "run", ps)
     monkeypatch.setattr(cli, "EXIT_WAIT_SECS", 0)
-    state.update(killed=killed, alive=alive, stubborn=stubborn)
+    state.update(killed=killed, alive=alive, stubborn=stubborn, started=started)
     return state
 
 
@@ -334,6 +355,40 @@ def test_kill_goes_on_when_a_process_is_already_gone(closing, monkeypatch, capsy
     assert closing["killed"] == [(104, cli.signal.SIGTERM)]
     out = capsys.readouterr().out
     assert "idle-5d idle-5d: already gone" in out and "closed 1 of 2" in out
+
+
+def test_kill_leaves_open_a_session_whose_pid_another_process_now_holds(closing, monkeypatch,
+                                                                        capsys):
+    _answer(monkeypatch, "y")
+    closing["started"][101] = NOW - 60  # the session exited and a new process got its pid
+
+    main(["-ki", "3d", "--color", "never"])
+
+    assert closing["killed"] == [(104, cli.signal.SIGTERM)]
+    out = capsys.readouterr().out
+    assert "idle-5d idle-5d: its process could not be confirmed, left open" in out
+
+
+def test_kill_leaves_open_a_session_whose_process_start_is_not_known(closing, monkeypatch,
+                                                                     capsys):
+    _answer(monkeypatch, "y")
+    closing["sessions"][0].pid_started = None
+
+    main(["-ki", "3d", "--color", "never"])
+
+    assert closing["killed"] == [(104, cli.signal.SIGTERM)]
+    assert "idle-5d idle-5d: its process could not be confirmed" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("etime", "elapsed", "same"), [
+    ("05:07", 307, True), ("01:02:03", 3723, True), ("2-01:02:03", 2 * DAY + 3723, True),
+    ("2-01:02:03", 2 * DAY + 3723 + 3, False), ("", 0, False), ("garbage", 0, False)])
+def test_process_identity_reads_ps_elapsed_time(monkeypatch, etime, elapsed, same):
+    monkeypatch.setattr(cli.time, "time", lambda: NOW)
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, etime + "\n", ""))
+
+    assert cli._is_its_process(101, NOW - elapsed) is same
 
 
 @pytest.mark.parametrize(("argv", "error"), [

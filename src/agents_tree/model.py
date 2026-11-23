@@ -71,6 +71,9 @@ class Session:
     kind: str | None = None  # interactive / background
     # The session's own process, when the provider knows it for sure: what -k signals.
     pid: int | None = None
+    # When that process started (epoch seconds), as the provider knows it: -k signals
+    # `pid` only while the process holding it started then, not a later one reusing it.
+    pid_started: float | None = None
 
     def all_agents(self):
         yield self.main

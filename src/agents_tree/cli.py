@@ -6,6 +6,7 @@ import argparse
 import os
 import re
 import signal
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -197,14 +198,19 @@ def _close(sessions: list[Session], load: Callable[[], list[Session]],
         return None
     # Read again: a session that got a message while we asked is no longer idle.
     try:
-        still_idle = {(s.id, s.pid) for s in load()}
+        still_idle = {s.id: s for s in load()}
     except LookupError:
-        still_idle = set()
+        still_idle = {}
     signalled = []
     for s, pid in closable:
         name = f"{s.id[:8]} {s.title}"
-        if (s.id, pid) not in still_idle:
+        fresh = still_idle.get(s.id)
+        if fresh is None or fresh.pid != pid:
             print(f"{name}: active again, left open")
+            continue
+        if not _is_its_process(pid, fresh.pid_started):
+            print(f"{name}: " + ("already gone" if not _alive(pid) else
+                                 "its process could not be confirmed, left open"))
             continue
         try:
             os.kill(pid, signal.SIGTERM)
@@ -221,6 +227,32 @@ def _close(sessions: list[Session], load: Callable[[], list[Session]],
         print(f"{s.id[:8]} {s.title}: {result}")
     print(f"closed {len(gone)} of {len(closable)}; their transcripts stay, to resume later")
     return gone
+
+
+# `ps` gives whole seconds and the provider stamps the start a moment after exec.
+PID_START_SLACK_SECS = 2.0
+
+
+def _is_its_process(pid: int, started: float | None) -> bool:
+    """Whether `pid` is still held by the process that started at `started`, and not
+    by a later one that got the pid after it exited. Unknown counts as no.
+
+    ponytail: checked just before the signal, not atomically with it; a pidfd
+    (Linux only) would close that last gap of a few milliseconds."""
+    if started is None:
+        return False
+    try:
+        out = subprocess.run(["ps", "-o", "etime=", "-p", str(pid)], capture_output=True,
+                             text=True, timeout=5, check=False,
+                             env={**os.environ, "LC_ALL": "C"}).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    m = re.fullmatch(r"(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)", out)  # [[dd-]hh:]mm:ss
+    if not m:
+        return False
+    d, h, mi, s = (int(g or 0) for g in m.groups())
+    elapsed = ((d * 24 + h) * 60 + mi) * 60 + s
+    return abs(time.time() - elapsed - started) <= PID_START_SLACK_SECS
 
 
 def _alive(pid: int) -> bool:
