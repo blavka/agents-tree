@@ -315,9 +315,24 @@ def test_load_takes_the_process_from_the_live_entry(fake):
     path = fake.session("s1", "/w/a", [assistant(0)])
 
     s = claude.load(path, {"sessionId": "s1", "kind": "interactive", "status": "idle",
-                           "pid": 42}, "/w/a")
+                           "pid": 42, "pidStarted": 1700000000.5}, "/w/a")
 
-    assert s.pid == 42
+    assert (s.pid, s.pid_started) == (42, 1700000000.5)
+
+
+def test_live_rows_keep_the_process_start_in_seconds_beside_its_pid():
+    [row] = claude._live_rows([{"sessionId": "s1", "kind": "interactive", "pid": 42,
+                                "startedAt": 1700000000500}])
+
+    assert row["pidStarted"] == 1700000000.5
+
+
+@pytest.mark.parametrize("started", [None, 0, True, "1700000000500"])
+def test_live_rows_keep_no_process_start_that_is_not_a_real_one(started):
+    [row] = claude._live_rows([{"sessionId": "s1", "kind": "interactive", "pid": 42,
+                                "startedAt": started}])
+
+    assert row["pid"] == 42 and "pidStarted" not in row
 
 
 @pytest.mark.parametrize("pid", [None, 0, -1, True, "42"])
@@ -368,7 +383,7 @@ def test_live_rows_deduplicate_a_resumed_session():
 
     assert claude._live_rows(rows) == [
         {"sessionId": "s1", "cwd": None, "kind": "interactive", "status": "busy",
-         "name": None, "pid": 42},
+         "name": None, "pid": 42, "pidStarted": 0.2},
         {"sessionId": "s2", "cwd": None, "kind": "background", "status": "idle", "name": None},
     ]
 
